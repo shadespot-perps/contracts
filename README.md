@@ -1,4 +1,6 @@
 ## Protocol Architecture Diagram
+
+```bash
                     +----------------------+
                     |      Price Oracle    |
                     | (PriceOracle.sol)    |
@@ -29,6 +31,7 @@
                                      +-------v-------+
                                      | Liquidity LPs |
                                      +---------------+
+```
 ## What Each Component Does
 ### Router
 
@@ -268,3 +271,13 @@ Router
   |
   v
 PositionManager
+
+## To-Do
+
+1. Liquidity provider tokens inmplementation
+2. PnL utils library integration
+
+## Bugs
+1. Potential bug in cancelOrder function of OrderManager.sol (check architecture.md section 3.6)
+2. One-sided funding — traders always pay funding, never receive it via PositionManager
+3. Bootstrapping deadlock — availableLiquidity=0 blocks liquidations at vault.payout(liquidator) (not too sure about this, check architecture.md section 6 issue #5)
