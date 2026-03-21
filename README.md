@@ -278,6 +278,6 @@ PositionManager
 2. PnL utils library integration
 
 ## Bugs
-1. Potential bug in cancelOrder function of OrderManager.sol (check architecture.md section 3.6)
+1. Potential bug in cancelOrder function of OrderManager.sol (check architecture.md section 3.6)  //Fixed
 2. One-sided funding — traders always pay funding, never receive it via PositionManager
 3. Bootstrapping deadlock — availableLiquidity=0 blocks liquidations at vault.payout(liquidator) (not too sure about this, check architecture.md section 6 issue #5)

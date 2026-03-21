@@ -72,6 +72,7 @@ contract OrderManager {
     router = _router;
 }
     function createOrder(
+        address trader,
         address token,
         uint256 collateral,
         uint256 leverage,
@@ -82,7 +83,7 @@ contract OrderManager {
         require(collateral > 0, "invalid collateral");
 
         orders[nextOrderId] = Order({
-            trader: msg.sender,
+            trader: trader,
             token: token,
             collateral: collateral,
             leverage: leverage,
@@ -105,11 +106,11 @@ contract OrderManager {
     // CANCEL ORDER
     // --------------------------------
 
-    function cancelOrder(uint256 orderId) external onlyRouter{
+    function cancelOrder(uint256 orderId, address caller) external onlyRouter{
 
         Order storage order = orders[orderId];
 
-        require(order.trader == msg.sender, "not owner");
+        require(order.trader == caller, "not owner");
         require(order.isActive, "inactive");
 
         order.isActive = false;

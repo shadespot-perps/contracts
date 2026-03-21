@@ -137,6 +137,7 @@ contract Router {
         );
 
         orderManager.createOrder(
+            msg.sender,
             token,
             collateral,
             leverage,
@@ -152,7 +153,7 @@ contract Router {
     // -------------------------------------------------
 
     function cancelOrder(uint256 orderId) external {
-        orderManager.cancelOrder(orderId);
+        orderManager.cancelOrder(orderId, msg.sender);
     }
 
     // -------------------------------------------------
