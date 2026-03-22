@@ -13,7 +13,7 @@ contract PositionManager {
         uint256 size;
         uint256 collateral;
         uint256 entryPrice;
-        uint256 entryFundingRate;
+        int256 entryFundingRate;
         bool isLong;
     }
 
@@ -136,7 +136,7 @@ contract PositionManager {
         bytes32 key = getPositionKey(trader, token, isLong);
         require(positions[key].size == 0, "position exists");
 
-        uint256 fundingRate = fundingManager.getFundingRate(token);
+        int256 fundingRate = fundingManager.getFundingRate(token);
 
         vault.reserveLiquidity(size);
 
@@ -183,7 +183,7 @@ contract PositionManager {
         if (pnl > 0) {
 
             uint256 profit = uint256(pnl);
-            vault.payout(trader, profit + position.collateral);
+            vault.payTrader(trader, profit, position.collateral);
 
         } else {
 
@@ -194,7 +194,7 @@ contract PositionManager {
             } else {
                 uint256 remaining = position.collateral - loss;
                 vault.receiveLoss(loss);
-                vault.payout(trader, remaining);
+                vault.payTrader(trader, 0, remaining);
             }
         }
 
@@ -240,15 +240,15 @@ contract PositionManager {
         Position memory position
     ) public view returns (int256) {
 
-        uint256 currentFunding =
+        int256 currentFunding =
             fundingManager.getFundingRate(position.indexToken);
 
-        uint256 fundingDiff =
+        int256 fundingDiff =
             currentFunding - position.entryFundingRate;
 
-        return int256(
-            (position.size * fundingDiff) / FUNDING_PRECISION
-        );
+        int256 feeBase = (int256(position.size) * fundingDiff) / int256(FUNDING_PRECISION);
+
+        return position.isLong ? feeBase : -feeBase;
     }
 
     // -------------------------------------------------
@@ -286,7 +286,11 @@ contract PositionManager {
             );
 
             vault.releaseLiquidity(position.size);
-            vault.receiveLoss(position.collateral);
+            
+            // pay liquidator 5% bonus from collateral, remaining to LP pool
+            uint256 reward = (position.collateral * 5) / 100;
+            vault.receiveLoss(position.collateral - reward);
+            vault.payTrader(msg.sender, 0, reward);
 
             fundingManager.decreaseOpenInterest(
                 token,

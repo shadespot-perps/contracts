@@ -11,7 +11,7 @@ contract FundingRateManager {
     address public positionManager;
 
     struct FundingData {
-        uint256 cumulativeFundingRate;
+        int256 cumulativeFundingRate;
         uint256 lastFundingTime;
         uint256 longOpenInterest;
         uint256 shortOpenInterest;
@@ -21,8 +21,8 @@ contract FundingRateManager {
 
     event FundingUpdated(
         address indexed token,
-        uint256 fundingRate,
-        uint256 cumulativeFundingRate
+        int256 fundingRate,
+        int256 cumulativeFundingRate
     );
 
     event OpenInterestUpdated(
@@ -139,18 +139,16 @@ contract FundingRateManager {
             return;
         }
 
-        uint256 imbalance;
-
-        if (longOI > shortOI) {
-            imbalance = longOI - shortOI;
-        } else {
-            imbalance = shortOI - longOI;
-        }
-
+        int256 fundingRate;
         uint256 totalOI = longOI + shortOI;
 
-        uint256 fundingRate =
-            (imbalance * FUNDING_RATE_PRECISION) / totalOI;
+        if (longOI > shortOI) {
+            uint256 imbalance = longOI - shortOI;
+            fundingRate = int256((imbalance * FUNDING_RATE_PRECISION) / totalOI);
+        } else {
+            uint256 imbalance = shortOI - longOI;
+            fundingRate = -int256((imbalance * FUNDING_RATE_PRECISION) / totalOI);
+        }
 
         data.cumulativeFundingRate += fundingRate;
         data.lastFundingTime = block.timestamp;
@@ -169,7 +167,7 @@ contract FundingRateManager {
     function getFundingRate(address token)
         external
         view
-        returns (uint256)
+        returns (int256)
     {
         return fundingData[token].cumulativeFundingRate;
     }

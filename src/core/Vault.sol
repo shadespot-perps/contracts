@@ -24,8 +24,7 @@ contract Vault {
     event PayOut(address indexed user, uint256 amount);
     event ReceiveLoss(uint256 amount);
 
-    event ReceiveFunding(uint256 amount);
-    event PayFunding(address indexed trader, uint256 amount);
+
 
     modifier onlyPositionManager() {
         require(msg.sender == positionManager, "Not position manager");
@@ -65,12 +64,6 @@ function setRouter(address _router) external onlyOwner {
     function deposit(uint256 amount) external onlyRouter{
 
         require(amount > 0, "Invalid amount");
-
-        collateralToken.transferFrom(
-            msg.sender,
-            address(this),
-            amount
-        );
 
         lpBalance[msg.sender] += amount;
         totalLiquidity += amount;
@@ -122,16 +115,19 @@ function setRouter(address _router) external onlyOwner {
         emit DecreaseReserved(amount);
     }
 
-    function payout(address user, uint256 amount)
+    function payTrader(address user, uint256 profit, uint256 returnedCollateral)
         external
         onlyPositionManager
     {
-
-        require(
-            availableLiquidity() >= amount,
-            "Vault insufficient"
-        );
-
+        if (profit > 0) {
+            require(
+                availableLiquidity() >= profit,
+                "Vault insufficient profit"
+            );
+            totalLiquidity -= profit;
+        }
+        
+        uint256 amount = profit + returnedCollateral;
         collateralToken.transfer(user, amount);
 
         emit PayOut(user, amount);
@@ -147,36 +143,7 @@ function setRouter(address _router) external onlyOwner {
         emit ReceiveLoss(amount);
     }
 
-    // ------------------------------------------------
-    // FUNDING FUNCTIONS
-    // ------------------------------------------------
 
-    // trader pays funding → LP profit
-    function receiveFunding(uint256 amount)
-        external
-        onlyPositionManager
-    {
-
-        totalLiquidity += amount;
-
-        emit ReceiveFunding(amount);
-    }
-
-    // trader receives funding → LP pays
-    function payFunding(address trader, uint256 amount)
-        external
-        onlyPositionManager
-    {
-
-        require(
-            availableLiquidity() >= amount,
-            "Insufficient funding liquidity"
-        );
-
-        collateralToken.transfer(trader, amount);
-
-        emit PayFunding(trader, amount);
-    }
 
     // ------------------------------------------------
     // VIEW FUNCTIONS

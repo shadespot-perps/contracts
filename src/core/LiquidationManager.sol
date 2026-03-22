@@ -58,10 +58,7 @@ contract LiquidationManager {
         int256 pnl = positionManager.calculatePnL(position, price);
 
         // funding adjustment
-        uint256 fundingRate = fundingManager.getFundingRate(token);
-
-        int256 fundingFee =
-            int256(position.size * fundingRate) / int256(1e12);
+        int256 fundingFee = positionManager.calculateFundingFee(position);
 
         pnl -= fundingFee;
 
@@ -100,11 +97,8 @@ contract LiquidationManager {
         uint256 reward =
             (position.collateral * LIQUIDATION_BONUS) / 100;
 
-        // close position in position manager
+        // close position in position manager (handles liquidator reward internally)
         positionManager.liquidate(trader, token, isLong);
-
-        // reward liquidator
-        vault.payout(msg.sender, reward);
 
         emit LiquidationExecuted(
             trader,

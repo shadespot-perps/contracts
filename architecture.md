@@ -74,9 +74,9 @@ Withdrawals and new payouts both check `availableLiquidity()` before execution. 
 
 **LP Shares:** Currently **not tokenized** — `lpBalance` is a plain `uint256` mapping. There is no ERC-20 LP token, no fee accrual mechanism per share. LP PnL is implicit: when traders lose, `totalLiquidity` grows via `receiveLoss()`; when traders profit, the vault pays out from the pool, shrinking `totalLiquidity`.
 
-**Funding flow to vault:**
-- `receiveFunding(amount)` — increases `totalLiquidity` (long pays short/pool when longs dominate)
-- `payFunding(trader, amount)` — decreases `availableLiquidity` (pool pays trader when shorts dominate)
+**Profit and Funding flow to vault:**
+- `Vault.receiveLoss()` — increases `totalLiquidity` when a trader physically loses collateral or pays net funding fees backwards into the LP pool.
+- `Vault.payTrader()` — safely processes trader winnings (price profit + funding receipts) by explicitly decreasing `totalLiquidity` before transferring out, ensuring LPs explicitly socialize the cost and keeping Vault accounting properly solvent.
 
 ---
 
@@ -90,7 +90,7 @@ struct Position {
     uint256 size;            // notional = collateral * leverage (in collateral token units)
     uint256 collateral;      // deposited margin
     uint256 entryPrice;      // oracle price at open (raw uint256, assumed 1e18 or fixed precision)
-    uint256 entryFundingRate; // snapshot of cumulativeFundingRate at open
+    int256 entryFundingRate; // snapshot of cumulativeFundingRate at open
     bool isLong;
 }
 ```
@@ -130,11 +130,11 @@ Router.closePosition(token, isLong)
        ├─ price = oracle.getPrice(token)
        ├─ pnl = calculatePnL(position, price)
        ├─ fundingFee = calculateFundingFee(position)
-       ├─ pnl -= fundingFee                        ← net PnL after funding cost
+       ├─ pnl -= fundingFee                        ← net PnL after funding cost (can increase PnL if receiving funding)
        ├─ vault.releaseLiquidity(position.size)
        │
        ├─ if pnl > 0:
-       │     vault.payout(trader, profit + collateral)
+       │     vault.payTrader(trader, profit, collateral)
        │
        └─ if pnl < 0:
              loss = -pnl
@@ -142,7 +142,7 @@ Router.closePosition(token, isLong)
                vault.receiveLoss(collateral)        ← trader wiped out
              else:
                vault.receiveLoss(loss)
-               vault.payout(trader, collateral - loss)
+               vault.payTrader(trader, 0, collateral - loss)
 ```
 
 **Note on `receiveLoss()`:** This function only increments `totalLiquidity` — it does **not** move tokens. The collateral was already deposited into `Vault` at position open (sent by `Router`), so the accounting update is all that is needed. This is sound but subtle: the vault holds the collateral physically from the moment of `transferFrom`.
@@ -168,7 +168,7 @@ Both return `int256` (signed). The formula normalizes PnL back to collateral-tok
 **Per-token state:**
 ```solidity
 struct FundingData {
-    uint256 cumulativeFundingRate;  // monotonically increasing accumulator
+    int256 cumulativeFundingRate;   // signed accumulator (positive = longs pay, negative = shorts pay)
     uint256 lastFundingTime;
     uint256 longOpenInterest;       // sum of all long position sizes
     uint256 shortOpenInterest;      // sum of all short position sizes
@@ -182,21 +182,30 @@ struct FundingData {
 imbalance = |longOI - shortOI|
 totalOI   = longOI + shortOI
 
-fundingRate (per epoch) = (imbalance * FUNDING_RATE_PRECISION) / totalOI
-cumulativeFundingRate  += fundingRate
+// Rate is explicitly signed depending on which side has majority
+int256 signedRate;
+if (longOI >= shortOI) {
+    uint256 imbalance = longOI - shortOI;
+    signedRate = int256((imbalance * FUNDING_RATE_PRECISION) / totalOI);
+} else {
+    uint256 imbalance = shortOI - longOI;
+    signedRate = -int256((imbalance * FUNDING_RATE_PRECISION) / totalOI);
+}
+cumulativeFundingRate  += signedRate
 ```
 
 `FUNDING_RATE_PRECISION = 1e12`
 
-This is an **imbalance-proportional** funding model (not a velocity-based one like dYdX v3). The rate is always non-negative and always paid by the majority side to the minority side (via the vault as intermediary). There is no sign encoding — the direction of payment is inferred implicitly from OI comparison at the time fees are settled.
+This is an **imbalance-proportional** two-sided funding model. The rate is explicitly signed (positive when longs dominate, negative when shorts dominate). The Vault serves as the central counterparty bridging the cash flows.
 
 **Funding fee at close:**
 ```solidity
-fundingDiff = cumulativeFundingRate_now - position.entryFundingRate
-fundingFee  = (position.size * fundingDiff) / FUNDING_PRECISION
+int256 fundingDiff = cumulativeFundingRate_now - position.entryFundingRate;
+int256 feeBase = (int256(position.size) * fundingDiff) / int256(FUNDING_PRECISION);
+int256 fundingFee = position.isLong ? feeBase : -feeBase;
 ```
 
-This means **funding is always a cost** to the trader (never a receipt through `PositionManager` directly). The model assumes the position is always on the majority/paying side for simplicity — a nuance that would need to be revisited for a production bilateral funding settlement.
+Because `fundingFee` can be negative, traders can **receive funding**, which increases their net PnL prior to `Vault.payTrader()` execution. The Vault's total LP liquidity mathematically shrinks or grows as the net aggregate counterparty.
 
 **Important:** `updateFunding()` is idempotent within a 1-hour window (early return if `block.timestamp < lastFundingTime + FUNDING_INTERVAL`). This means funding only ticks once per hour regardless of how many trades occur.
 
@@ -221,17 +230,14 @@ isLiquidatable = true  iff:
 LiquidationManager.liquidate(trader, token, isLong)
   ├─ isLiquidatable(...) check
   ├─ fundingManager.updateFunding(token)         ← ensure funding is current
-  ├─ positionManager.liquidate(trader, token, isLong)
-  │    ├─ re-verifies threshold internally        ← double-check (defense in depth)
-  │    ├─ vault.releaseLiquidity(size)
-  │    └─ vault.receiveLoss(collateral)           ← all collateral to pool
-  │
-  └─ vault.payout(msg.sender, reward)            ← 5% bonus to liquidator
+  └─ positionManager.liquidate(trader, token, isLong)
+       ├─ re-verifies threshold internally        ← double-check (defense in depth)
+       ├─ vault.releaseLiquidity(size)
+       ├─ vault.receiveLoss(collateral - reward)   ← remaining collateral flows to pool
+       └─ vault.payTrader(liquidator, 0, reward)  ← 5% bonus sent directly to liquidator
 ```
 
-**Design note:** The 5% liquidator reward is paid **from the vault's available liquidity**, not from the seized collateral directly. This means if `availableLiquidity()` is zero at the time of liquidation, the `payout` call will revert — creating a scenario where liquidations can be blocked during high utilization. This is a known risk in pool-based perp designs.
-
-There is also a **double-accounting concern**: `receiveLoss(collateral)` increases `totalLiquidity` by the full collateral, and then `payout(liquidator, reward)` withdraws 5% of collateral. Net effect: vault gains 95% of collateral. This is correct but only works because the physical token was in the vault since position open.
+**Design note:** The 5% liquidator reward is executed natively inside `PositionManager.liquidate`. The liquidator is paid *directly* out of the seized collateral prior to the remainder being passed to the LP pool (`vault.receiveLoss`). This guarantees liquidations can never be deadlocked by a 100% Vault utilization rate.
 
 ---
 
@@ -358,16 +364,17 @@ Trader Open:
   (collateral is physically in vault from block of open)
 
 Trader Close (profit):
-  Vault.payout(trader, profit + collateral)
+  Vault.payTrader(trader, profit, collateral)  → totalLiquidity -= profit
   ERC-20 path: Vault → Trader wallet
 
 Trader Close (loss):
   Vault.receiveLoss(loss)      → totalLiquidity += loss  (accounting only, no token move)
-  Vault.payout(trader, remainder)
+  Vault.payTrader(trader, 0, remainder)
 
 Liquidation:
-  PositionManager.liquidate() → Vault.receiveLoss(collateral)   (accounting)
-  Vault.payout(liquidator, 5% of collateral)                    (token move from vault)
+  PositionManager.liquidate() 
+    → vault.receiveLoss(collateral - reward)  (accounting to pool)
+    → vault.payTrader(liquidator, 0, reward)  (token move directly to liquidator)
 ```
 
 ---
@@ -377,8 +384,8 @@ Liquidation:
 | Caller \ Target | `Vault` | `PositionManager` | `FundingRateMgr` | `OrderManager` |
 |---|---|---|---|---|
 | `Router` | `deposit`, `withdraw` | `openPosition`, `closePosition` | `updateFunding` | `createOrder`, `cancelOrder`, `executeOrder` |
-| `PositionManager` | `reserveLiquidity`, `releaseLiquidity`, `payout`, `receiveLoss`, `receiveFunding`, `payFunding` | — | `increaseOI`, `decreaseOI` | — |
-| `LiquidationManager` | `payout` (via PM) | `liquidate` | — | — |
+| `PositionManager` | `reserveLiquidity`, `releaseLiquidity`, `payTrader`, `receiveLoss` | — | `increaseOI`, `decreaseOI` | — |
+| `LiquidationManager` | — | `liquidate` | — | — |
 | `Owner` | `setPositionManager`, `setRouter` | `setRouter`, `setLiquidationManager` | `setRouter`, `setPositionManager` | `setRouter` |
 | `Public/Keeper` | — | — | — | — (only via Router) |
 
@@ -391,13 +398,11 @@ Liquidation:
 | 1 | **Centralized oracle** — owner sets prices; no TWAP, no Chainlink | `PriceOracle.sol` | Critical |
 | 2 | **Cancel order broken** — `order.trader == msg.sender` always compares against Router address | `OrderManager.sol:112` | High |
 | 3 | **No LP tokenization** — LP positions are not transferable; no share-based fee accounting | `Vault.sol` | Medium |
-| 4 | **One-sided funding** — traders always pay funding, never receive it via `PositionManager` | `PositionManager.sol:247-251` | Medium |
-| 5 | **Bootstrapping deadlock** — `availableLiquidity=0` blocks liquidations at `vault.payout(liquidator)` | `LiquidationManager.sol:107` | Medium |
-| 6 | **No position modification** — no increase/decrease collateral or size; full open/close only | `PositionManager.sol` | Low |
-| 7 | **Single address per direction** — `keccak256(trader, token, isLong)` key prevents multiple independent positions | `PositionManager.sol:107` | Low |
-| 8 | **PnLUtils unused** — library exists but not integrated | `PnlUtils.sol` | Low |
-| 9 | **Precision assumptions** — oracle price units and collateral units are not validated to share scale | `PositionManager.sol:222-231` | Medium |
-| 10 | **Immutable privilege addresses** — PM/Router addresses can only be set once; no upgrade path | `Vault.sol:51,57` | Medium |
+| 4 | **No position modification** — no increase/decrease collateral or size; full open/close only | `PositionManager.sol` | Low |
+| 5 | **Single address per direction** — `keccak256(trader, token, isLong)` key prevents multiple independent positions | `PositionManager.sol:107` | Low |
+| 6 | **PnLUtils unused** — library exists but not integrated | `PnlUtils.sol` | Low |
+| 7 | **Precision assumptions** — oracle price units and collateral units are not validated to share scale | `PositionManager.sol:222-231` | Medium |
+| 8 | **Immutable privilege addresses** — PM/Router addresses can only be set once; no upgrade path | `Vault.sol:51,57` | Medium |
 
 ---
 
