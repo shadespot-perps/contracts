@@ -153,7 +153,9 @@ contract Router {
     // -------------------------------------------------
 
     function cancelOrder(uint256 orderId) external {
+        (address trader, , uint256 collateral, , , , ) = orderManager.orders(orderId);
         orderManager.cancelOrder(orderId, msg.sender);
+        vault.refundCollateral(trader, collateral);
     }
 
     // -------------------------------------------------

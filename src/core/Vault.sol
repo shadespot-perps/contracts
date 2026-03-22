@@ -119,18 +119,23 @@ function setRouter(address _router) external onlyOwner {
         external
         onlyPositionManager
     {
+        uint256 actualProfit = profit;
         if (profit > 0) {
-            require(
-                availableLiquidity() >= profit,
-                "Vault insufficient profit"
-            );
-            totalLiquidity -= profit;
+            uint256 available = availableLiquidity();
+            if (profit > available) {
+                actualProfit = available;
+            }
+            totalLiquidity -= actualProfit;
         }
         
-        uint256 amount = profit + returnedCollateral;
+        uint256 amount = actualProfit + returnedCollateral;
         collateralToken.transfer(user, amount);
 
         emit PayOut(user, amount);
+    }
+
+    function refundCollateral(address user, uint256 amount) external onlyRouter {
+        collateralToken.transfer(user, amount);
     }
 
     function receiveLoss(uint256 amount)
