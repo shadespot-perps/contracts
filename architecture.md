@@ -74,9 +74,10 @@ Withdrawals and new payouts both check `availableLiquidity()` before execution. 
 
 **LP Shares:** Currently **not tokenized** — `lpBalance` is a plain `uint256` mapping. There is no ERC-20 LP token, no fee accrual mechanism per share. LP PnL is implicit: when traders lose, `totalLiquidity` grows via `receiveLoss()`; when traders profit, the vault pays out from the pool, shrinking `totalLiquidity`.
 
-**Profit and Funding flow to vault:**
+**Profit, Funding, and Refund flow to vault:**
 - `Vault.receiveLoss()` — increases `totalLiquidity` when a trader physically loses collateral or pays net funding fees backwards into the LP pool.
-- `Vault.payTrader()` — safely processes trader winnings (price profit + funding receipts) by explicitly decreasing `totalLiquidity` before transferring out, ensuring LPs explicitly socialize the cost and keeping Vault accounting properly solvent.
+- `Vault.payTrader()` — safely processes trader winnings (price profit + funding receipts) by explicitly decreasing `totalLiquidity` before transferring out. *Note: this function dynamically caps the trader payout to the Vault's current `availableLiquidity()`, mathematically preventing LP front-running and infinite-profit lockups.*
+- `Vault.refundCollateral()` — exclusively used to return un-utilized escrowed collateral directly to the user (e.g. limit order cancellations).
 
 ---
 
@@ -207,7 +208,7 @@ int256 fundingFee = position.isLong ? feeBase : -feeBase;
 
 Because `fundingFee` can be negative, traders can **receive funding**, which increases their net PnL prior to `Vault.payTrader()` execution. The Vault's total LP liquidity mathematically shrinks or grows as the net aggregate counterparty.
 
-**Important:** `updateFunding()` is idempotent within a 1-hour window (early return if `block.timestamp < lastFundingTime + FUNDING_INTERVAL`). This means funding only ticks once per hour regardless of how many trades occur.
+**Important:** `updateFunding()` is idempotent within a 1-hour window (early return if `block.timestamp < lastFundingTime + FUNDING_INTERVAL`). The function is fully **public (unpermissioned)**, meaning any caller (including `OrderManager` triggers) can safely tick the deterministic time-clock forward regardless of how many trades occur.
 
 ---
 
@@ -234,7 +235,8 @@ LiquidationManager.liquidate(trader, token, isLong)
        ├─ re-verifies threshold internally        ← double-check (defense in depth)
        ├─ vault.releaseLiquidity(size)
        ├─ vault.receiveLoss(collateral - reward)   ← remaining collateral flows to pool
-       └─ vault.payTrader(liquidator, 0, reward)  ← 5% bonus sent directly to liquidator
+       ├─ vault.payTrader(liquidationManager, 0, reward)  ← 5% bonus paid out internally
+       └─ vault.collateralToken().transfer(liquidator, reward) ← bonus forwarded cleanly to caller
 ```
 
 **Design note:** The 5% liquidator reward is executed natively inside `PositionManager.liquidate`. The liquidator is paid *directly* out of the seized collateral prior to the remainder being passed to the LP pool (`vault.receiveLoss`). This guarantees liquidations can never be deadlocked by a 100% Vault utilization rate.
@@ -298,7 +300,7 @@ struct Order {
 
 Orders are not matched peer-to-peer — they are keeper-executed against the pool, identical to a market order once the price condition is met.
 
-**Bug note:** `cancelOrder` checks `order.trader == msg.sender` but `msg.sender` at that point is always `router` (since `onlyRouter` is the modifier). This means the trader address check is comparing against the Router contract's address, which will always fail for any real trader. Cancel is effectively broken in the current implementation.
+*(Note: The previous limit order cancellation bug where trader identity was incorrectly checked has been formally patched and collateral is now safely refunded by the Router).*
 
 ---
 
@@ -383,11 +385,11 @@ Liquidation:
 
 | Caller \ Target | `Vault` | `PositionManager` | `FundingRateMgr` | `OrderManager` |
 |---|---|---|---|---|
-| `Router` | `deposit`, `withdraw` | `openPosition`, `closePosition` | `updateFunding` | `createOrder`, `cancelOrder`, `executeOrder` |
+| `Router` | `deposit`, `withdraw`, `refundCollateral` | `openPosition`, `closePosition` | *None (see Public)* | `createOrder`, `cancelOrder`, `executeOrder` |
 | `PositionManager` | `reserveLiquidity`, `releaseLiquidity`, `payTrader`, `receiveLoss` | — | `increaseOI`, `decreaseOI` | — |
 | `LiquidationManager` | — | `liquidate` | — | — |
 | `Owner` | `setPositionManager`, `setRouter` | `setRouter`, `setLiquidationManager` | `setRouter`, `setPositionManager` | `setRouter` |
-| `Public/Keeper` | — | — | — | — (only via Router) |
+| `Public/Keeper` | — | — | `updateFunding` | — (only via Router) |
 
 ---
 
@@ -396,7 +398,7 @@ Liquidation:
 | # | Issue | Location | Severity |
 |---|-------|----------|----------|
 | 1 | **Centralized oracle** — owner sets prices; no TWAP, no Chainlink | `PriceOracle.sol` | Critical |
-| 2 | **Cancel order broken** — `order.trader == msg.sender` always compares against Router address | `OrderManager.sol:112` | High |
+| 2 | ~~**Cancel order broken**~~ [PATCHED via Router returning caller pool collateral] | `OrderManager.sol` | Resolved |
 | 3 | **No LP tokenization** — LP positions are not transferable; no share-based fee accounting | `Vault.sol` | Medium |
 | 4 | **No position modification** — no increase/decrease collateral or size; full open/close only | `PositionManager.sol` | Low |
 | 5 | **Single address per direction** — `keccak256(trader, token, isLong)` key prevents multiple independent positions | `PositionManager.sol:107` | Low |
