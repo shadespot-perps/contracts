@@ -9,6 +9,7 @@ contract FundingRateManager {
     address public owner;
     address public router;
     address public positionManager;
+    address public liquidationManager;
 
     struct FundingData {
         int256 cumulativeFundingRate;
@@ -43,8 +44,8 @@ contract FundingRateManager {
         _;
     }
 
-    modifier onlyRouter() {
-        require(msg.sender == router, "only router");
+    modifier onlyRouterOrLiquidationManager() {
+        require(msg.sender == router || msg.sender == liquidationManager, "only router or liq mgr");
         _;
     }
 
@@ -71,6 +72,11 @@ contract FundingRateManager {
         require(positionManager == address(0), "pm already set");
         positionManager = _pm;
         emit PositionManagerSet(_pm);
+    }
+
+    function setLiquidationManager(address _lm) external onlyOwner {
+        require(liquidationManager == address(0), "lm already set");
+        liquidationManager = _lm;
     }
 
     // -------------------------------------------------
@@ -120,10 +126,10 @@ contract FundingRateManager {
     }
 
     // -------------------------------------------------
-    // UPDATE FUNDING (Router only)
+    // UPDATE FUNDING (Publicly triggerable)
     // -------------------------------------------------
 
-    function updateFunding(address token) external onlyRouter {
+    function updateFunding(address token) external {
 
         FundingData storage data = fundingData[token];
 

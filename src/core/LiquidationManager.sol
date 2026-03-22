@@ -100,6 +100,9 @@ contract LiquidationManager {
         // close position in position manager (handles liquidator reward internally)
         positionManager.liquidate(trader, token, isLong);
 
+        // Forward the exact reward to the liquidator who called this function
+        vault.collateralToken().transfer(msg.sender, reward);
+
         emit LiquidationExecuted(
             trader,
             msg.sender,
