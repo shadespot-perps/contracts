@@ -150,19 +150,28 @@ contract PositionManager {
         ebool    feeExceedsPnl = FHE.gt(eFundingFee, ePnl);
         euint128 eNetPnl       = FHE.select(feeExceedsPnl, FHE.asEuint128(0), FHE.sub(ePnl, eFundingFee));
 
-        // Decrypt only at the settlement boundary — the single authorised output point
-        uint128 netPnlPlain      = FHE.decrypt(eNetPnl);
-        uint128 collateralPlain  = FHE.decrypt(position.collateral);
-        uint128 sizePlain        = FHE.decrypt(position.size);
-        bool    isLongPlain      = FHE.decrypt(position.isLong);
+        (uint256 _netPnl, bool ok1) = FHE.getDecryptResultSafe(eNetPnl);
+        (uint256 _collateral, bool ok2) = FHE.getDecryptResultSafe(position.collateral);
+        (uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
+        (bool _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
 
+require(ok1 && ok2 && ok3 && ok4, "decrypt not ready");
+
+uint128 netPnlPlain = uint128(_netPnl);
+uint128 collateralPlain = uint128(_collateral);
+uint128 sizePlain = uint128(_size);
+bool isLongPlain = (_isLong == 1);
         vault.releaseLiquidity(uint256(sizePlain));
 
         // Determine signed PnL: positive for longs when price rose, shorts when fell
         int256 signedPnl;
         {
             uint256 currentPrice = oracle.getPrice(token);
-            uint128 entryPricePlain = FHE.decrypt(position.entryPrice);
+            // uint128 entryPricePlain = FHE.decrypt(position.entryPrice);
+            (uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
+           require(ok5, "decrypt not ready");
+
+           uint128 entryPricePlain = uint128(_entryPrice);
             if (isLongPlain) {
                 signedPnl = currentPrice >= entryPricePlain
                     ? int256(uint256(netPnlPlain))
@@ -237,7 +246,11 @@ contract PositionManager {
 
         // Decrypt size only to compute the scalar fee — size alone does not
         // reveal direction or profitability
-        uint128 sizePlain = FHE.decrypt(position.size);
+        // uint128 sizePlain = FHE.decrypt(position.size);
+        (uint256 _size, bool ok) = FHE.getDecryptResultSafe(position.size);
+require(ok, "decrypt not ready");
+
+uint128 sizePlain = uint128(_size);
         int256 feeBase    = (int256(uint256(sizePlain)) * fundingDiff) / int256(FUNDING_PRECISION);
 
         // Fee magnitude is always non-negative; re-encrypt for encrypted return
@@ -268,12 +281,19 @@ contract PositionManager {
         ebool    feeExceedsPnl = FHE.gt(eFundingFee, ePnl);
         euint128 eNetPnl       = FHE.select(feeExceedsPnl, FHE.asEuint128(0), FHE.sub(ePnl, eFundingFee));
 
-        // Decrypt at settlement boundary
-        uint128 netPnlPlain     = FHE.decrypt(eNetPnl);
-        uint128 collateralPlain = FHE.decrypt(position.collateral);
-        uint128 sizePlain       = FHE.decrypt(position.size);
-        bool    isLongPlain     = FHE.decrypt(position.isLong);
-        uint128 entryPricePlain = FHE.decrypt(position.entryPrice);
+        (uint256 _netPnl, bool ok1) = FHE.getDecryptResultSafe(eNetPnl); 
+        (uint256 _collateral, bool ok2) = FHE.getDecryptResultSafe(position.collateral);
+(uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
+(uint256 _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
+(uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
+
+require(ok1 && ok2 && ok3 && ok4 && ok5, "decrypt not ready");
+
+uint128 netPnlPlain = uint128(_netPnl);
+uint128 collateralPlain = uint128(_collateral);
+uint128 sizePlain = uint128(_size);
+bool isLongPlain = (_isLong == 1);
+uint128 entryPricePlain = uint128(_entryPrice);
 
         // Determine whether the position is at a loss
         bool atLoss;
