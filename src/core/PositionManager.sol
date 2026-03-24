@@ -160,7 +160,7 @@ require(ok1 && ok2 && ok3 && ok4, "decrypt not ready");
 uint128 netPnlPlain = uint128(_netPnl);
 uint128 collateralPlain = uint128(_collateral);
 uint128 sizePlain = uint128(_size);
-bool isLongPlain = (_isLong == 1);
+bool isLongPlain = _isLong;
         vault.releaseLiquidity(uint256(sizePlain));
 
         // Determine signed PnL: positive for longs when price rose, shorts when fell
@@ -248,9 +248,9 @@ bool isLongPlain = (_isLong == 1);
         // reveal direction or profitability
         // uint128 sizePlain = FHE.decrypt(position.size);
         (uint256 _size, bool ok) = FHE.getDecryptResultSafe(position.size);
-require(ok, "decrypt not ready");
+        require(ok, "decrypt not ready");
 
-uint128 sizePlain = uint128(_size);
+        uint128 sizePlain = uint128(_size);
         int256 feeBase    = (int256(uint256(sizePlain)) * fundingDiff) / int256(FUNDING_PRECISION);
 
         // Fee magnitude is always non-negative; re-encrypt for encrypted return
@@ -283,17 +283,17 @@ uint128 sizePlain = uint128(_size);
 
         (uint256 _netPnl, bool ok1) = FHE.getDecryptResultSafe(eNetPnl); 
         (uint256 _collateral, bool ok2) = FHE.getDecryptResultSafe(position.collateral);
-(uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
-(uint256 _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
-(uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
+        (uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
+        (bool _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
+        (uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
 
-require(ok1 && ok2 && ok3 && ok4 && ok5, "decrypt not ready");
+        require(ok1 && ok2 && ok3 && ok4 && ok5, "decrypt not ready");
 
-uint128 netPnlPlain = uint128(_netPnl);
-uint128 collateralPlain = uint128(_collateral);
-uint128 sizePlain = uint128(_size);
-bool isLongPlain = (_isLong == 1);
-uint128 entryPricePlain = uint128(_entryPrice);
+        uint128 netPnlPlain = uint128(_netPnl);
+        uint128 collateralPlain = uint128(_collateral);
+        uint128 sizePlain = uint128(_size);
+        bool isLongPlain = _isLong;
+        uint128 entryPricePlain = uint128(_entryPrice);
 
         // Determine whether the position is at a loss
         bool atLoss;
