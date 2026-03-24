@@ -130,100 +130,80 @@ contract PositionManager {
     // =========================================================
 
     function closePosition(
-        address trader,
-        address token,
-        bool isLong
-    ) external onlyRouter {
+    address trader,
+    address token,
+    bool isLong
+) external onlyRouter {
 
-        bytes32 key = getPositionKey(trader, token, isLong);
-        Position storage position = positions[key];
-        // require(position.exists, "position does not exist");
-        ebool exists = FHE.asEbool(position.exists);
+    bytes32 key = getPositionKey(trader, token, isLong);
+    Position storage position = positions[key];
+    require(position.exists, "position does not exist");
 
-      // Wrap entire logic
-       euint128 safeSize = FHE.select(
-       exists,
-       position.size,
-       FHE.asEuint128(0)
-       );
-        uint256 price = oracle.getPrice(token);
+    uint256 price = oracle.getPrice(token);
 
-        // PnL and funding fee remain encrypted until final settlement boundary
-        euint128 ePnl         = calculatePnL(position, price);
-        euint128 eFundingFee  = calculateFundingFee(position);
+    // ================================
+    // 1. FULLY ENCRYPTED COMPUTATION
+    // ================================
 
-        // Subtract funding fee from gross PnL (both are non-negative magnitudes;
-        // eFundingFee is always <= ePnl in normal operation, but clamp to zero)
-        ebool    feeExceedsPnl = FHE.gt(eFundingFee, ePnl);
-        euint128 eNetPnl       = FHE.select(feeExceedsPnl, FHE.asEuint128(0), FHE.sub(ePnl, eFundingFee));
+    euint128 ePnl        = calculatePnL(position, price);
+    euint128 eFundingFee = calculateFundingFee(position);
 
-        (uint256 _netPnl, bool ok1) = FHE.getDecryptResultSafe(eNetPnl);
-        (uint256 _collateral, bool ok2) = FHE.getDecryptResultSafe(position.collateral);
-        (uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
-        (bool _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
+    // net pnl (clamped to >= 0)
+    ebool feeExceedsPnl = FHE.gt(eFundingFee, ePnl);
+    euint128 eNetPnl = FHE.select(
+        feeExceedsPnl,
+        FHE.asEuint128(0),
+        FHE.sub(ePnl, eFundingFee)
+    );
 
-require(ok1 && ok2 && ok3 && ok4, "decrypt not ready");
+    // ================================
+    // 2. DETERMINE PROFIT/LOSS (ENCRYPTED)
+    // ================================
 
-uint128 netPnlPlain = uint128(_netPnl);
-uint128 collateralPlain = uint128(_collateral);
-uint128 sizePlain = uint128(_size);
-bool isLongPlain = _isLong;
-        vault.releaseLiquidity(uint256(sizePlain));
+    // price comparison in encrypted domain
+    euint128 ePrice = FHE.asEuint128(price);
 
-        // Determine signed PnL: positive for longs when price rose, shorts when fell
-        int256 signedPnl;
-        {
-            uint256 currentPrice = oracle.getPrice(token);
-            // uint128 entryPricePlain = FHE.decrypt(position.entryPrice);
-            (uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
-           require(ok5, "decrypt not ready");
+    ebool isProfit = FHE.select(
+        position.isLong,
+        FHE.gte(ePrice, position.entryPrice),  // long profit
+        FHE.lte(ePrice, position.entryPrice)   // short profit
+    );
 
-           uint128 entryPricePlain = uint128(_entryPrice);
-            if (isLongPlain) {
-                signedPnl = currentPrice >= entryPricePlain
-                    ? int256(uint256(netPnlPlain))
-                    : -int256(uint256(netPnlPlain));
-            } else {
-                signedPnl = currentPrice <= entryPricePlain
-                    ? int256(uint256(netPnlPlain))
-                    : -int256(uint256(netPnlPlain));
-            }
-        }
-            /*
-         if (signedPnl > 0) {
-            vault.payTrader(trader, uint256(signedPnl), uint256(collateralPlain));
-        } else {
-            uint256 loss = uint256(-signedPnl);
-            if (loss >= uint256(collateralPlain)) {
-                vault.receiveLoss(uint256(collateralPlain));
-            } else {
-                uint256 remaining = uint256(collateralPlain) - loss;
-                vault.receiveLoss(loss);
-                vault.payTrader(trader, 0, remaining);
-            }
-        }
-        */
+    // ================================
+    // 3. FINAL SETTLEMENT (ENCRYPTED)
+    // ================================
 
-    //    uint256 profit = uint256(signedPnl > 0 ? signedPnl : 0);
-    uint256 profit = signedPnl > 0 ? uint256(signedPnl) : uint256(0);
-    uint256 loss = signedPnl < 0 ? uint256(-signedPnl) : uint256(0);
-    //    uint256 loss   = uint256(signedPnl < 0 ? -signedPnl : 0);
-       ebool isProfit = FHE.gt(eNetPnl, FHE.asEuint128(0));
+    euint128 eFinalAmount = FHE.select(
+        isProfit,
+        FHE.add(position.collateral, eNetPnl),   // profit
+        FHE.sub(position.collateral, eNetPnl)    // loss
+    );
 
-       euint128 profitAmount = FHE.select(isProfit, eNetPnl, FHE.asEuint128(0));
-       euint128 lossAmount   = FHE.select(isProfit, FHE.asEuint128(0), eNetPnl);
-       (uint256 profitPlain, ) = FHE.getDecryptResultSafe(profitAmount);
-       (uint256 lossPlain, )   = FHE.getDecryptResultSafe(lossAmount);
-       (uint256 collateralPlain2, ) = FHE.getDecryptResultSafe(position.collateral);
-       vault.payTrader(trader, profitPlain, collateralPlain2 - lossPlain);
-       vault.receiveLoss(lossPlain);
+    // ================================
+    // 4. MINIMAL DECRYPTION (ONLY FINAL)
+    // ================================
 
-        fundingManager.decreaseOpenInterest(token, uint256(sizePlain), isLong);
+    (uint256 finalAmount, bool ok) = FHE.getDecryptResultSafe(eFinalAmount);
+    require(ok, "decrypt not ready");
 
-        delete positions[key];
+    // ================================
+    // 5. VAULT INTERACTION
+    // ================================
 
-        emit PositionClosed(trader, token);
-    }
+    // NOTE: still need size in plaintext for liquidity release
+    (uint256 sizePlain, bool ok2) = FHE.getDecryptResultSafe(position.size);
+    require(ok2, "decrypt not ready");
+
+    vault.releaseLiquidity(sizePlain);
+
+    vault.payTrader(trader, 0, finalAmount);
+
+    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
+
+    delete positions[key];
+
+    emit PositionClosed(trader, token);
+}
 
     // =========================================================
     // PNL  — returns encrypted magnitude (always >= 0)
@@ -285,107 +265,81 @@ bool isLongPlain = _isLong;
     // =========================================================
 
     function liquidate(
-        address trader,
-        address token,
-        bool isLong
-    ) external onlyLiquidationManager {
+    address trader,
+    address token,
+    bool isLong
+) external onlyLiquidationManager {
 
-        bytes32 key = getPositionKey(trader, token, isLong);
-        Position storage position = positions[key];
-        require(position.exists, "no position");
+    // ─────────────────────────────────────────────
+    // 1. BASIC CHECKS (plaintext only)
+    // ─────────────────────────────────────────────
+    bytes32 key = getPositionKey(trader, token, isLong);
+    Position storage position = positions[key];
+    require(position.exists, "no position");
 
-        uint256 price = oracle.getPrice(token);
+    uint256 price  = oracle.getPrice(token);
+    euint128 ePrice = FHE.asEuint128(price);
 
-        euint128 ePnl        = calculatePnL(position, price);
-        euint128 eFundingFee = calculateFundingFee(position);
+    // ─────────────────────────────────────────────
+    // 2. FULLY ENCRYPTED PnL + FUNDING FEE
+    //    (best of liquidate_have — kept in FHE domain)
+    // ─────────────────────────────────────────────
+    euint128 ePnl        = calculatePnL(position, price);
+    euint128 eFundingFee = calculateFundingFee(position);
 
-        // Net PnL magnitude after fees
-        ebool    feeExceedsPnl = FHE.gt(eFundingFee, ePnl);
-        euint128 eNetPnl       = FHE.select(feeExceedsPnl, FHE.asEuint128(0), FHE.sub(ePnl, eFundingFee));
+    // Total effective loss includes funding fees
+    euint128 eTotalLoss  = FHE.add(ePnl, eFundingFee);
 
-        (uint256 _netPnl, bool ok1) = FHE.getDecryptResultSafe(eNetPnl); 
-        (uint256 _collateral, bool ok2) = FHE.getDecryptResultSafe(position.collateral);
-        (uint256 _size, bool ok3) = FHE.getDecryptResultSafe(position.size);
-        (bool _isLong, bool ok4) = FHE.getDecryptResultSafe(position.isLong);
-        (uint256 _entryPrice, bool ok5) = FHE.getDecryptResultSafe(position.entryPrice);
+    // ─────────────────────────────────────────────
+    // 3. ENCRYPTED DIRECTIONAL LOSS CHECK
+    //    (best of liquidate — stays encrypted)
+    // ─────────────────────────────────────────────
 
-        require(ok1 && ok2 && ok3 && ok4 && ok5, "decrypt not ready");
+    // Is price moving against the position?
+    ebool longLoss  = FHE.lt(ePrice, position.entryPrice);  // long:  price fell
+    ebool shortLoss = FHE.gt(ePrice, position.entryPrice);  // short: price rose
+    ebool isAtLoss  = FHE.select(position.isLong, longLoss, shortLoss);
 
-        uint128 netPnlPlain = uint128(_netPnl);
-        uint128 collateralPlain = uint128(_collateral);
-        uint128 sizePlain = uint128(_size);
-        bool isLongPlain = _isLong;
-        uint128 entryPricePlain = uint128(_entryPrice);
+    // threshold = collateral * LIQUIDATION_THRESHOLD / 100  (all encrypted)
+    euint128 threshold = FHE.div(
+        FHE.mul(position.collateral, FHE.asEuint128(LIQUIDATION_THRESHOLD)),
+        FHE.asEuint128(100)
+    );
 
-        // Determine whether the position is at a loss
-        bool atLoss;
-        if (isLongPlain) {
-            atLoss = price < entryPricePlain;
-        } else {
-            atLoss = price > entryPricePlain;
-        }
+    // Loss must exceed threshold AND position must be at a loss
+    ebool meetsThreshold  = FHE.gte(eTotalLoss, threshold);
+    ebool canLiquidateEnc = FHE.and(isAtLoss, meetsThreshold);
 
-        // require(atLoss, "position is not at a loss");
+    // ─────────────────────────────────────────────
+    // 4. DECRYPT ONLY ONE BIT
+    //    Minimum information leaked — just the bool
+    // ─────────────────────────────────────────────
+    (bool canLiquidate, bool okBool) = FHE.getDecryptResultSafe(canLiquidateEnc);
+    require(okBool,       "decrypt not ready");
+    require(canLiquidate, "not liquidatable");   // hard revert — no silent pass
 
-        uint256 loss = uint256(netPnlPlain);
+    // ─────────────────────────────────────────────
+    // 5. DECRYPT SETTLEMENT VALUES (only after check passes)
+    //    Decrypt the minimum needed for on-chain settlement
+    // ─────────────────────────────────────────────
+    (uint256 collateralPlain, bool ok1) = FHE.getDecryptResultSafe(position.collateral);
+    (uint256 sizePlain,       bool ok2) = FHE.getDecryptResultSafe(position.size);
+    require(ok1 && ok2, "decrypt fail");
 
-        // require(
-            // loss * 100 / uint256(collateralPlain) >= LIQUIDATION_THRESHOLD,
-            // "not liquidatable"
-        // );
-        euint128 ePrice = FHE.asEuint128(price);
+    // ─────────────────────────────────────────────
+    // 6. SETTLEMENT + CLEANUP
+    // ─────────────────────────────────────────────
+    vault.releaseLiquidity(sizePlain);
 
-// price < entryPrice (for long)
-ebool longLoss = FHE.lt(ePrice, position.entryPrice);
+    uint256 reward = (collateralPlain * 5) / 100;           // 5% liquidator reward
+    vault.receiveLoss(collateralPlain - reward);
+    vault.payTrader(msg.sender, 0, reward);
 
-// price > entryPrice (for short)
-ebool shortLoss = FHE.gt(ePrice, position.entryPrice);
+    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
 
-// select based on encrypted direction
-ebool isAtLoss = FHE.select(position.isLong, longLoss, shortLoss);
-  euint128 threshold = FHE.div(
-    FHE.mul(position.collateral, FHE.asEuint128(LIQUIDATION_THRESHOLD)),
-    FHE.asEuint128(100)
-);
+    delete positions[key];
 
-ebool meetsThreshold = FHE.gte(
-    FHE.asEuint128(loss),
-    threshold
-);
-ebool canLiquidate = FHE.and(isAtLoss, meetsThreshold);
+    emit PositionLiquidated(trader, token);
+}
 
-        vault.releaseLiquidity(uint256(sizePlain));
-
-        uint256 reward = (uint256(collateralPlain) * 5) / 100;
-
-        // vault.receiveLoss(uint256(collateralPlain) - reward);
-        // vault.payTrader(msg.sender, 0, reward);
-        euint128 eReward = FHE.div(
-    FHE.mul(position.collateral, FHE.asEuint128(5)),
-    FHE.asEuint128(100)
-);
-
-// If cannot liquidate → reward = 0
-euint128 finalReward = FHE.select(
-    canLiquidate,
-    eReward,
-    FHE.asEuint128(0)
-);
-
-// Decrypt only final value
-(uint256 rewardPlain, bool ok) = FHE.getDecryptResultSafe(finalReward);
-require(ok, "decrypt not ready");
-
-(uint256 collateralPlain2, ) = FHE.getDecryptResultSafe(position.collateral);
-
-// Always execute (NO revert)
-vault.receiveLoss(collateralPlain2 - rewardPlain);
-vault.payTrader(msg.sender, 0, rewardPlain);
-
-        fundingManager.decreaseOpenInterest(token, uint256(sizePlain), isLongPlain);
-
-        delete positions[key];
-
-        emit PositionLiquidated(trader, token);
-    }
 }
