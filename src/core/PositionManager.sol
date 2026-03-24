@@ -137,8 +137,15 @@ contract PositionManager {
 
         bytes32 key = getPositionKey(trader, token, isLong);
         Position storage position = positions[key];
-        require(position.exists, "position does not exist");
+        // require(position.exists, "position does not exist");
+        ebool exists = FHE.asEbool(position.exists);
 
+      // Wrap entire logic
+       euint128 safeSize = FHE.select(
+       exists,
+       position.size,
+       FHE.asEuint128(0)
+       );
         uint256 price = oracle.getPrice(token);
 
         // PnL and funding fee remain encrypted until final settlement boundary
@@ -182,8 +189,8 @@ bool isLongPlain = _isLong;
                     : -int256(uint256(netPnlPlain));
             }
         }
-
-        if (signedPnl > 0) {
+            /*
+         if (signedPnl > 0) {
             vault.payTrader(trader, uint256(signedPnl), uint256(collateralPlain));
         } else {
             uint256 loss = uint256(-signedPnl);
@@ -195,6 +202,21 @@ bool isLongPlain = _isLong;
                 vault.payTrader(trader, 0, remaining);
             }
         }
+        */
+
+    //    uint256 profit = uint256(signedPnl > 0 ? signedPnl : 0);
+    uint256 profit = signedPnl > 0 ? uint256(signedPnl) : uint256(0);
+    uint256 loss = signedPnl < 0 ? uint256(-signedPnl) : uint256(0);
+    //    uint256 loss   = uint256(signedPnl < 0 ? -signedPnl : 0);
+       ebool isProfit = FHE.gt(eNetPnl, FHE.asEuint128(0));
+
+       euint128 profitAmount = FHE.select(isProfit, eNetPnl, FHE.asEuint128(0));
+       euint128 lossAmount   = FHE.select(isProfit, FHE.asEuint128(0), eNetPnl);
+       (uint256 profitPlain, ) = FHE.getDecryptResultSafe(profitAmount);
+       (uint256 lossPlain, )   = FHE.getDecryptResultSafe(lossAmount);
+       (uint256 collateralPlain2, ) = FHE.getDecryptResultSafe(position.collateral);
+       vault.payTrader(trader, profitPlain, collateralPlain2 - lossPlain);
+       vault.receiveLoss(lossPlain);
 
         fundingManager.decreaseOpenInterest(token, uint256(sizePlain), isLong);
 
@@ -303,21 +325,62 @@ bool isLongPlain = _isLong;
             atLoss = price > entryPricePlain;
         }
 
-        require(atLoss, "position is not at a loss");
+        // require(atLoss, "position is not at a loss");
 
         uint256 loss = uint256(netPnlPlain);
 
-        require(
-            loss * 100 / uint256(collateralPlain) >= LIQUIDATION_THRESHOLD,
-            "not liquidatable"
-        );
+        // require(
+            // loss * 100 / uint256(collateralPlain) >= LIQUIDATION_THRESHOLD,
+            // "not liquidatable"
+        // );
+        euint128 ePrice = FHE.asEuint128(price);
+
+// price < entryPrice (for long)
+ebool longLoss = FHE.lt(ePrice, position.entryPrice);
+
+// price > entryPrice (for short)
+ebool shortLoss = FHE.gt(ePrice, position.entryPrice);
+
+// select based on encrypted direction
+ebool isAtLoss = FHE.select(position.isLong, longLoss, shortLoss);
+  euint128 threshold = FHE.div(
+    FHE.mul(position.collateral, FHE.asEuint128(LIQUIDATION_THRESHOLD)),
+    FHE.asEuint128(100)
+);
+
+ebool meetsThreshold = FHE.gte(
+    FHE.asEuint128(loss),
+    threshold
+);
+ebool canLiquidate = FHE.and(isAtLoss, meetsThreshold);
 
         vault.releaseLiquidity(uint256(sizePlain));
 
         uint256 reward = (uint256(collateralPlain) * 5) / 100;
 
-        vault.receiveLoss(uint256(collateralPlain) - reward);
-        vault.payTrader(msg.sender, 0, reward);
+        // vault.receiveLoss(uint256(collateralPlain) - reward);
+        // vault.payTrader(msg.sender, 0, reward);
+        euint128 eReward = FHE.div(
+    FHE.mul(position.collateral, FHE.asEuint128(5)),
+    FHE.asEuint128(100)
+);
+
+// If cannot liquidate → reward = 0
+euint128 finalReward = FHE.select(
+    canLiquidate,
+    eReward,
+    FHE.asEuint128(0)
+);
+
+// Decrypt only final value
+(uint256 rewardPlain, bool ok) = FHE.getDecryptResultSafe(finalReward);
+require(ok, "decrypt not ready");
+
+(uint256 collateralPlain2, ) = FHE.getDecryptResultSafe(position.collateral);
+
+// Always execute (NO revert)
+vault.receiveLoss(collateralPlain2 - rewardPlain);
+vault.payTrader(msg.sender, 0, rewardPlain);
 
         fundingManager.decreaseOpenInterest(token, uint256(sizePlain), isLongPlain);
 
