@@ -120,9 +120,7 @@ contract PositionManager {
             exists: true
         });
 
-        // Pass encrypted size — FundingRateManager accumulates OI without knowing
-        // individual position sizes. sizePlain is used only for the vault reserve.
-        fundingManager.increaseOpenInterest(token, eSize, isLong);
+        fundingManager.increaseOpenInterest(token, sizePlain, isLong);
 
         emit PositionOpened(trader, token, sizePlain, collateral, isLong);
     }
@@ -192,9 +190,6 @@ contract PositionManager {
     // 5. VAULT INTERACTION
     // ================================
 
-    // Decrypt size only for the vault — the minimum necessary to release liquidity.
-    // OI update receives the encrypted handle so FundingRateManager never sees
-    // individual position sizes.
     (uint256 sizePlain, bool ok2) = FHE.getDecryptResultSafe(position.size);
     require(ok2, "decrypt not ready");
 
@@ -202,7 +197,7 @@ contract PositionManager {
 
     vault.payTrader(trader, 0, finalAmount);
 
-    fundingManager.decreaseOpenInterest(token, position.size, isLong);
+    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
 
     delete positions[key];
 
@@ -338,8 +333,7 @@ contract PositionManager {
     vault.receiveLoss(collateralPlain - reward);
     vault.payTrader(msg.sender, 0, reward);
 
-    // Pass encrypted size to OI tracker — see closePosition comment
-    fundingManager.decreaseOpenInterest(token, position.size, isLong);
+    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
 
     delete positions[key];
 
