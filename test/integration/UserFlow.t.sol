@@ -2,141 +2,162 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
-import "forge-std/console.sol";
-
-import "../../src/core/Vault.sol";
+import "cofhe-contracts/FHE.sol";
 import "../../src/core/PositionManager.sol";
 import "../../src/core/LiquidationManager.sol";
 import "../../src/core/FundingRateManager.sol";
+import "../../src/core/Vault.sol";
 import "../../src/trading/Router.sol";
 import "../../src/trading/OrderManager.sol";
 import "../../src/oracle/PriceOracle.sol";
-
+import "../mocks/MockTaskManager.sol";
 import "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
 
 contract UserFlowTest is Test {
-    ERC20Mock collateralToken;
-    PriceOracle oracle;
-    FundingRateManager fundingManager;
-    Vault vault;
-    PositionManager positionManager;
-    OrderManager orderManager;
-    Router router;
-    LiquidationManager liquidationManager;
+    address constant TASK_MANAGER = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
 
-    address owner = address(this);
-    address lp = address(0x1);
-    address trader = address(0x2);
+    PositionManager    positionManager;
+    LiquidationManager liquidationManager;
+    FundingRateManager fundingManager;
+    Vault              vault;
+    Router             router;
+    OrderManager       orderManager;
+    PriceOracle        oracle;
+    ERC20Mock          collateralToken;
+
+    address owner     = address(this);
+    address trader    = address(0x100);
+    address liquidator = address(0x200);
+    address token;
 
     function setUp() public {
-        vm.label(lp, "LiquidityProvider");
-        vm.label(trader, "Trader");
+        vm.etch(TASK_MANAGER, address(new MockTaskManager()).code);
 
-        // 1. Deploy mock collateral token (e.g., USDC)
         collateralToken = new ERC20Mock();
-        
-        // 2. Deploy PriceOracle
-        oracle = new PriceOracle();
-        
-        // 3. Deploy FundingRateManager
+        token = address(collateralToken);
+
+        oracle         = new PriceOracle();
         fundingManager = new FundingRateManager();
-        
-        // 4. Deploy Vault
-        vault = new Vault(address(collateralToken), owner);
-        
-        // 5. Deploy PositionManager
+        vault          = new Vault(token, owner);
         positionManager = new PositionManager(address(vault), address(oracle), address(fundingManager));
-        
-        // 6. Deploy OrderManager
+
+        // LiquidationManager: positionManager + fundingManager only
+        liquidationManager = new LiquidationManager(address(positionManager), address(fundingManager));
+
         orderManager = new OrderManager(address(oracle), address(fundingManager), owner);
-        
-        // 7. Deploy Router
-        router = new Router(
+        router       = new Router(
             address(positionManager),
             address(vault),
             address(orderManager),
             address(fundingManager),
             address(collateralToken)
         );
-        
-        // 8. Deploy LiquidationManager
-        liquidationManager = new LiquidationManager(
-            address(positionManager),
-            address(oracle),
-            address(vault),
-            address(fundingManager)
-        );
 
-        // Wiring privileges
-        vault.setPositionManager(address(positionManager));
-        vault.setRouter(address(router));
         positionManager.setRouter(address(router));
         positionManager.setLiquidationManager(address(liquidationManager));
-        fundingManager.setRouter(address(router));
+        vault.setPositionManager(address(positionManager));
+        vault.setRouter(address(router));
         fundingManager.setPositionManager(address(positionManager));
+        fundingManager.setRouter(address(router));
         orderManager.setRouter(address(router));
 
-        // Setup mock prices
-        oracle.setPrice(address(collateralToken), 1000 * 1e18); // Example price for WETH index: 1 WETH = $1000
+        oracle.setPrice(token, 2000 * 1e18);
 
-        // Mint collateral to users
-        collateralToken.mint(lp, 100_000 * 1e18); // 100k
-        collateralToken.mint(trader, 10_000 * 1e18); // 10k
+        // LP adds 100 000 tokens to the vault
+        collateralToken.mint(owner, 100_000 * 1e18);
+        collateralToken.approve(address(router), 100_000 * 1e18);
+        router.addLiquidity(100_000 * 1e18);
     }
 
-    function test_SmokeUserFlow() public {
-        uint256 lpAmount = 50_000 * 1e18;
-        uint256 traderMargin = 1_000 * 1e18;
-        uint256 leverage = 5;
+    // ------------------------------------------------------------------
+    // OPEN → CLOSE (profit)
+    // ------------------------------------------------------------------
 
-        // LP adds liquidity
-        vm.startPrank(lp);
-        collateralToken.approve(address(router), lpAmount);
-        router.addLiquidity(lpAmount);
-        vm.stopPrank();
+    function test_Flow_OpenClose_Profit() public {
+        uint256 collateral = 1000 * 1e18;
 
-        assertEq(vault.totalLiquidity(), lpAmount, "totalLiquidity mismatch");
-
-        // Trader opens a Long position
+        collateralToken.mint(trader, collateral);
         vm.startPrank(trader);
-        collateralToken.approve(address(router), traderMargin);
-        router.openPosition(
-            address(collateralToken), // Token being traded (serving as index here)
-            traderMargin,             // 1000 margin
-            leverage,                 // 5x
-            true                      // long
-        );
+        collateralToken.approve(address(router), collateral);
+        router.openPosition(token, collateral, 5, true);
         vm.stopPrank();
 
-        bytes32 posKey = positionManager.getPositionKey(trader, address(collateralToken), true);
-        PositionManager.Position memory pos = positionManager.getPosition(posKey);
-        
-        assertEq(pos.size, traderMargin * leverage, "position size mismatch");
-        assertEq(pos.collateral, traderMargin, "position collateral mismatch");
-        assertEq(pos.entryPrice, 1000 * 1e18, "entry price mismatch");
+        oracle.setPrice(token, 2200 * 1e18);
 
-        // Simulate price go up: WETH goes from 1000 to 1100 (+10%)
-        oracle.setPrice(address(collateralToken), 1100 * 1e18);
+        vm.prank(trader);
+        router.closePosition(token, true);
 
-        // Trader closes position
-        uint256 balanceBefore = collateralToken.balanceOf(trader);
-        
+        // PnL = (2200-2000)*5000/2000 = 500. Payout = 1000+500 = 1500.
+        assertEq(collateralToken.balanceOf(trader), 1500 * 1e18);
+    }
+
+    // ------------------------------------------------------------------
+    // OPEN → CLOSE (loss)
+    // ------------------------------------------------------------------
+
+    function test_Flow_OpenClose_Loss() public {
+        uint256 collateral = 1000 * 1e18;
+
+        collateralToken.mint(trader, collateral);
         vm.startPrank(trader);
-        router.closePosition(address(collateralToken), true);
+        collateralToken.approve(address(router), collateral);
+        router.openPosition(token, collateral, 5, true);
         vm.stopPrank();
 
-        uint256 balanceAfter = collateralToken.balanceOf(trader);
-        
-        // PnL analysis:
-        // Position size: 5000 notional
-        // Price increased by 10%.
-        // Profit = (1100 - 1000) * 5000 / 1000 = 500
-        // Trader gets back Margin (1000) + Profit (500) = 1500. 
-        // Note: Funding might be zero because shorts=0 and longs=5000. Actually if longs > shorts, longs pay shorts/vault.
-        
-        console.log("Trader balance before:", balanceBefore / 1e18);
-        console.log("Trader balance after:", balanceAfter / 1e18);
+        oracle.setPrice(token, 1800 * 1e18);
 
-        assertTrue(balanceAfter > balanceBefore, "Trader should have made a profit");
+        vm.prank(trader);
+        router.closePosition(token, true);
+
+        // PnL loss = 500. Payout = 1000-500 = 500.
+        assertEq(collateralToken.balanceOf(trader), 500 * 1e18);
+    }
+
+    // ------------------------------------------------------------------
+    // LIQUIDATION
+    // ------------------------------------------------------------------
+
+    function test_Flow_Liquidation() public {
+        uint256 collateral = 1000 * 1e18;
+
+        collateralToken.mint(trader, collateral);
+        vm.startPrank(trader);
+        collateralToken.approve(address(router), collateral);
+        router.openPosition(token, collateral, 10, true);
+        vm.stopPrank();
+
+        // Loss at 1800: (2000-1800)*10000/2000 = 1000 = 100% of collateral → liquidatable
+        oracle.setPrice(token, 1800 * 1e18);
+
+        vm.prank(liquidator);
+        liquidationManager.liquidate(trader, token, true);
+
+        // 5% liquidator reward
+        assertEq(collateralToken.balanceOf(liquidator), 50 * 1e18);
+
+        bytes32 key = positionManager.getPositionKey(trader, token, true);
+        PositionManager.Position memory pos = positionManager.getPosition(key);
+        assertFalse(pos.exists);
+    }
+
+    // ------------------------------------------------------------------
+    // LP ADD / REMOVE LIQUIDITY
+    // ------------------------------------------------------------------
+
+    function test_Flow_AddRemoveLiquidity() public {
+        uint256 amount = 10_000 * 1e18;
+
+        collateralToken.mint(trader, amount);
+        vm.startPrank(trader);
+        collateralToken.approve(address(router), amount);
+        router.addLiquidity(amount);
+        vm.stopPrank();
+
+        assertEq(vault.totalLiquidity(), 110_000 * 1e18);
+
+        vm.prank(trader);
+        router.removeLiquidity(amount);
+
+        assertEq(vault.totalLiquidity(), 100_000 * 1e18);
     }
 }
