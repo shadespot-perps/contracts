@@ -265,7 +265,8 @@ contract PositionManager {
     function liquidate(
     address trader,
     address token,
-    bool isLong
+    bool isLong,
+    address liquidator
 ) external onlyLiquidationManager {
 
     // ─────────────────────────────────────────────
@@ -331,7 +332,7 @@ contract PositionManager {
 
     uint256 reward = (collateralPlain * 5) / 100;           // 5% liquidator reward
     vault.receiveLoss(collateralPlain - reward);
-    vault.payTrader(msg.sender, 0, reward);
+    vault.payTrader(liquidator, 0, reward);
 
     fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
 

@@ -18,6 +18,22 @@ import {FunctionId, ITaskManager, EncryptedInput} from "cofhe-contracts/ICofhe.s
 contract MockTaskManager is ITaskManager {
 
     // -------------------------------------------------------
+    // Boolean sentinel encoding
+    //
+    // The CoFHE library treats handle == 0 as "uninitialized" and substitutes
+    // asEbool(true) in and/or, asEbool(false) in select, etc.  If we returned 0
+    // for encrypted-false the library would silently flip the value.
+    //
+    // Encoding: 1 = true,  BOOL_FALSE (= 2) = false.
+    // getDecryptResultSafe maps BOOL_FALSE → (0, true) so callers see 0 for false.
+    // -------------------------------------------------------
+
+    uint256 private constant BOOL_FALSE = 2;
+
+    function _b(bool v) private pure returns (uint256) { return v ? 1 : BOOL_FALSE; }
+    function _isTrue(uint256 v) private pure returns (bool) { return v == 1; }
+
+    // -------------------------------------------------------
     // Core task execution
     // -------------------------------------------------------
 
@@ -34,26 +50,29 @@ contract MockTaskManager is ITaskManager {
 
         if (funcId == FunctionId.trivialEncrypt) return extraInputs.length > 0 ? extraInputs[0] : 0;
         if (funcId == FunctionId.cast)           return a;
-        if (funcId == FunctionId.select)         return a != 0 ? b : c;
+        // select: condition 1 = true → b; anything else (BOOL_FALSE or 0) → c
+        if (funcId == FunctionId.select)         return _isTrue(a) ? b : c;
         if (funcId == FunctionId.sub)            return a >= b ? a - b : 0;
         if (funcId == FunctionId.add)            return a + b;
         if (funcId == FunctionId.xor)            return a ^ b;
-        if (funcId == FunctionId.and)            return (a != 0 && b != 0) ? 1 : 0;
-        if (funcId == FunctionId.or)             return (a != 0 || b != 0) ? 1 : 0;
-        if (funcId == FunctionId.not)            return a == 0 ? 1 : 0;
+        // Boolean logic — use sentinel so downstream isInitialized() sees non-zero
+        if (funcId == FunctionId.and)            return _b(_isTrue(a) && _isTrue(b));
+        if (funcId == FunctionId.or)             return _b(_isTrue(a) || _isTrue(b));
+        if (funcId == FunctionId.not)            return _b(!_isTrue(a));
         if (funcId == FunctionId.div)            return b > 0 ? a / b : 0;
         if (funcId == FunctionId.rem)            return b > 0 ? a % b : 0;
         if (funcId == FunctionId.mul)            return a * b;
         if (funcId == FunctionId.shl)            return a << b;
         if (funcId == FunctionId.shr)            return a >> b;
-        if (funcId == FunctionId.gte)            return a >= b ? 1 : 0;
-        if (funcId == FunctionId.lte)            return a <= b ? 1 : 0;
-        if (funcId == FunctionId.lt)             return a <  b ? 1 : 0;
-        if (funcId == FunctionId.gt)             return a >  b ? 1 : 0;
+        // Comparison ops — return sentinel for false
+        if (funcId == FunctionId.gte)            return _b(a >= b);
+        if (funcId == FunctionId.lte)            return _b(a <= b);
+        if (funcId == FunctionId.lt)             return _b(a <  b);
+        if (funcId == FunctionId.gt)             return _b(a >  b);
         if (funcId == FunctionId.min)            return a <  b ? a : b;
         if (funcId == FunctionId.max)            return a >  b ? a : b;
-        if (funcId == FunctionId.eq)             return a == b ? 1 : 0;
-        if (funcId == FunctionId.ne)             return a != b ? 1 : 0;
+        if (funcId == FunctionId.eq)             return _b(a == b);
+        if (funcId == FunctionId.ne)             return _b(a != b);
         if (funcId == FunctionId.square)         return a * a;
         return 0;
     }
@@ -76,15 +95,18 @@ contract MockTaskManager is ITaskManager {
     // -------------------------------------------------------
 
     /// Handle IS the plaintext — always immediately ready.
+    /// BOOL_FALSE sentinel maps to 0 (the canonical false / zero value).
     function getDecryptResultSafe(uint256 ctHash)
         external pure override returns (uint256, bool)
     {
+        if (ctHash == BOOL_FALSE) return (0, true);
         return (ctHash, true);
     }
 
     function getDecryptResult(uint256 ctHash)
         external pure override returns (uint256)
     {
+        if (ctHash == BOOL_FALSE) return 0;
         return ctHash;
     }
 

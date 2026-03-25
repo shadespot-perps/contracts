@@ -53,7 +53,7 @@ contract LiquidationManager {
         // Best-effort funding settlement before the liquidation check
         fundingManager.updateFunding(token);
 
-        positionManager.liquidate(trader, token, isLong);
+        positionManager.liquidate(trader, token, isLong, msg.sender);
 
         emit LiquidationExecuted(trader, msg.sender, token);
     }
