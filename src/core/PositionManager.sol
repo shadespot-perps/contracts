@@ -120,7 +120,9 @@ contract PositionManager {
             exists: true
         });
 
-        fundingManager.increaseOpenInterest(token, sizePlain, isLong);
+        // Pass encrypted size — FundingRateManager accumulates OI without knowing
+        // individual position sizes. sizePlain is used only for the vault reserve.
+        fundingManager.increaseOpenInterest(token, eSize, isLong);
 
         emit PositionOpened(trader, token, sizePlain, collateral, isLong);
     }
@@ -190,7 +192,9 @@ contract PositionManager {
     // 5. VAULT INTERACTION
     // ================================
 
-    // NOTE: still need size in plaintext for liquidity release
+    // Decrypt size only for the vault — the minimum necessary to release liquidity.
+    // OI update receives the encrypted handle so FundingRateManager never sees
+    // individual position sizes.
     (uint256 sizePlain, bool ok2) = FHE.getDecryptResultSafe(position.size);
     require(ok2, "decrypt not ready");
 
@@ -198,7 +202,7 @@ contract PositionManager {
 
     vault.payTrader(trader, 0, finalAmount);
 
-    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
+    fundingManager.decreaseOpenInterest(token, position.size, isLong);
 
     delete positions[key];
 
@@ -213,7 +217,7 @@ contract PositionManager {
     function calculatePnL(
         Position memory position,
         uint256 price
-    ) public view returns (euint128) {
+    ) public returns (euint128) {
 
         euint128 ePrice = FHE.asEuint128(price);
 
@@ -241,23 +245,22 @@ contract PositionManager {
 
     function calculateFundingFee(
         Position memory position
-    ) public view returns (euint128) {
+    ) public returns (euint128) {
 
         int256 currentFunding = fundingManager.getFundingRate(position.indexToken);
         int256 fundingDiff    = currentFunding - position.entryFundingRate;
 
-        // Decrypt size only to compute the scalar fee — size alone does not
-        // reveal direction or profitability
-        // uint128 sizePlain = FHE.decrypt(position.size);
-        (uint256 _size, bool ok) = FHE.getDecryptResultSafe(position.size);
-        require(ok, "decrypt not ready");
+        // Both the current rate and entry rate are public scalars, so the diff
+        // magnitude is known without touching the encrypted size. We multiply the
+        // encrypted size by this plaintext scalar entirely inside FHE — no decrypt.
+        uint256 diffMagnitude = fundingDiff >= 0
+            ? uint256(fundingDiff)
+            : uint256(-fundingDiff);
 
-        uint128 sizePlain = uint128(_size);
-        int256 feeBase    = (int256(uint256(sizePlain)) * fundingDiff) / int256(FUNDING_PRECISION);
-
-        // Fee magnitude is always non-negative; re-encrypt for encrypted return
-        uint256 feeMagnitude = feeBase >= 0 ? uint256(feeBase) : uint256(-feeBase);
-        return FHE.asEuint128(feeMagnitude);
+        return FHE.div(
+            FHE.mul(position.size, FHE.asEuint128(diffMagnitude)),
+            FHE.asEuint128(FUNDING_PRECISION)
+        );
     }
 
     // =========================================================
@@ -335,7 +338,8 @@ contract PositionManager {
     vault.receiveLoss(collateralPlain - reward);
     vault.payTrader(msg.sender, 0, reward);
 
-    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
+    // Pass encrypted size to OI tracker — see closePosition comment
+    fundingManager.decreaseOpenInterest(token, position.size, isLong);
 
     delete positions[key];
 

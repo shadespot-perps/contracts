@@ -2,112 +2,59 @@
 pragma solidity ^0.8.20;
 
 import "../core/PositionManager.sol";
-import "../oracle/PriceOracle.sol";
-import "../core/Vault.sol";
 import "../core/FundingRateManager.sol";
 
+/**
+ * @title LiquidationManager
+ * @notice Thin entrypoint for liquidators. All PnL math, encrypted threshold checks,
+ *         and vault settlement live in PositionManager — this contract just triggers them.
+ *
+ * Privacy guarantees (inherited from PositionManager.liquidate):
+ *   - PnL and funding fee are computed entirely in the FHE domain.
+ *   - Only a single bit (canLiquidate: yes/no) is decrypted to authorise execution.
+ *   - Only the final settlement amounts are decrypted, exclusively to move tokens.
+ */
 contract LiquidationManager {
 
     PositionManager public positionManager;
-    PriceOracle public oracle;
-    Vault public vault;
     FundingRateManager public fundingManager;
-
-    uint256 public constant LIQUIDATION_BONUS = 5; // 5%
 
     event LiquidationExecuted(
         address indexed trader,
         address indexed liquidator,
-        address token,
-        uint256 reward
+        address indexed token
     );
 
     constructor(
         address _positionManager,
-        address _oracle,
-        address _vault,
         address _fundingManager
     ) {
         positionManager = PositionManager(_positionManager);
-        oracle = PriceOracle(_oracle);
-        vault = Vault(_vault);
         fundingManager = FundingRateManager(_fundingManager);
     }
 
-    // ------------------------------------------------
-    // CHECK IF POSITION IS LIQUIDATABLE
-    // ------------------------------------------------
-
-    function isLiquidatable(
-        address trader,
-        address token,
-        bool isLong
-    ) public view returns (bool) {
-
-        bytes32 key = positionManager.getPositionKey(trader, token, isLong);
-
-        PositionManager.Position memory position =
-            positionManager.getPosition(key);
-
-        if (position.size == 0) {
-            return false;
-        }
-
-        uint256 price = oracle.getPrice(token);
-
-        int256 pnl = positionManager.calculatePnL(position, price);
-
-        // funding adjustment
-        int256 fundingFee = positionManager.calculateFundingFee(position);
-
-        pnl -= fundingFee;
-
-        if (pnl >= 0) {
-            return false;
-        }
-
-        uint256 loss = uint256(-pnl);
-
-        return loss >= (position.collateral * 80) / 100;
-    }
-
-    // ------------------------------------------------
-    // LIQUIDATE POSITION
-    // ------------------------------------------------
+    // -------------------------------------------------------
+    // LIQUIDATE
+    // -------------------------------------------------------
+    // Flow:
+    //   1. Attempt to settle any pending encrypted funding update.
+    //   2. Delegate entirely to PositionManager, which:
+    //        a. Computes PnL + funding fee in FHE (no plaintext).
+    //        b. Decrypts one bool (canLiquidate).
+    //        c. Decrypts settlement amounts and pays the liquidator reward.
+    //        d. Cleans up position state.
+    // -------------------------------------------------------
 
     function liquidate(
         address trader,
         address token,
         bool isLong
     ) external {
-
-        require(
-            isLiquidatable(trader, token, isLong),
-            "position not liquidatable"
-        );
-
-        // update funding before liquidation
+        // Best-effort funding settlement before the liquidation check
         fundingManager.updateFunding(token);
 
-        bytes32 key = positionManager.getPositionKey(trader, token, isLong);
-
-        PositionManager.Position memory position =
-            positionManager.getPosition(key);
-
-        uint256 reward =
-            (position.collateral * LIQUIDATION_BONUS) / 100;
-
-        // close position in position manager (handles liquidator reward internally)
         positionManager.liquidate(trader, token, isLong);
 
-        // Forward the exact reward to the liquidator who called this function
-        vault.collateralToken().transfer(msg.sender, reward);
-
-        emit LiquidationExecuted(
-            trader,
-            msg.sender,
-            token,
-            reward
-        );
+        emit LiquidationExecuted(trader, msg.sender, token);
     }
 }

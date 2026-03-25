@@ -32,8 +32,8 @@ contract Router {
 
     event OrderCreated(
         address indexed trader,
-        address token,
-        uint256 triggerPrice
+        address         token
+        // triggerPrice intentionally omitted — stored encrypted in OrderManager
     );
 
     event OrderExecuted(uint256 orderId);
@@ -145,7 +145,7 @@ contract Router {
             isLong
         );
 
-        emit OrderCreated(msg.sender, token, triggerPrice);
+        emit OrderCreated(msg.sender, token);
     }
 
     // -------------------------------------------------
@@ -153,7 +153,7 @@ contract Router {
     // -------------------------------------------------
 
     function cancelOrder(uint256 orderId) external {
-        (address trader, , uint256 collateral, , , , ) = orderManager.orders(orderId);
+        (address trader, , uint256 collateral, , , ) = orderManager.getOrderMeta(orderId);
         orderManager.cancelOrder(orderId, msg.sender);
         vault.refundCollateral(trader, collateral);
     }

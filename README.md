@@ -238,6 +238,8 @@ PositionManager
   | close position
   v
 Vault
+
+
 ## Liquidation Steps
 1️⃣ Bot detects unsafe position
 
