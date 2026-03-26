@@ -11,6 +11,8 @@ import "../src/core/LiquidationManager.sol";
 import "../src/trading/OrderManager.sol";
 import "../src/trading/Router.sol";
 import "../src/trading/FHERouter.sol";
+import "../src/tokens/MockUSDC.sol";
+import "../src/tokens/MockFHEToken.sol";
 
 /**
  * @title DeployDualPool
@@ -32,10 +34,11 @@ import "../src/trading/FHERouter.sol";
  *   forge script script/DeployDualPool.s.sol \
  *       --rpc-url <RPC_URL> --broadcast --private-key <PK>
  *
- * Required environment variables:
- *   COLLATERAL_TOKEN_USDC   — address of the USDC (or any ERC-20) for Pool 1
- *   COLLATERAL_TOKEN_FHE    — address of the FHE encrypted ERC-20 for Pool 2
- *   PRIVATE_KEY             — deployer private key
+ * Environment variables:
+ *   PRIVATE_KEY             — deployer private key (required)
+ *   INDEX_TOKEN             — ETH token address used for price feed / position keys (required)
+ *   COLLATERAL_TOKEN_USDC   — Pool 1 collateral; if unset, MockUSDC is deployed automatically
+ *   COLLATERAL_TOKEN_FHE    — Pool 2 collateral; if unset, MockFHEToken is deployed automatically
  */
 contract DeployDualPool is Script {
 
@@ -58,13 +61,24 @@ contract DeployDualPool is Script {
     FHERouter          public router2;
 
     function run() external {
-        address usdcToken  = vm.envAddress("COLLATERAL_TOKEN_USDC");
-        address fheToken   = vm.envAddress("COLLATERAL_TOKEN_FHE");
         address indexToken_ = vm.envAddress("INDEX_TOKEN");
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer    = vm.addr(deployerKey);
 
         vm.startBroadcast(deployerKey);
+
+        // Deploy mock tokens if real addresses not provided
+        address usdcToken = vm.envOr("COLLATERAL_TOKEN_USDC", address(0));
+        if (usdcToken == address(0)) {
+            usdcToken = address(new MockUSDC());
+            console2.log("MockUSDC deployed:   ", usdcToken);
+        }
+
+        address fheToken = vm.envOr("COLLATERAL_TOKEN_FHE", address(0));
+        if (fheToken == address(0)) {
+            fheToken = address(new MockFHEToken("Encrypted USDC", "eUSDC"));
+            console2.log("MockFHEToken deployed:", fheToken);
+        }
 
         _deployPool1(usdcToken, deployer, indexToken_);
         _deployPool2(fheToken, deployer, indexToken_);

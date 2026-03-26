@@ -9,6 +9,7 @@ import "../src/core/PositionManager.sol";
 import "../src/core/LiquidationManager.sol";
 import "../src/trading/OrderManager.sol";
 import "../src/trading/Router.sol";
+import "../src/tokens/MockUSDC.sol";
 
 /**
  * @title Deploy
@@ -29,8 +30,9 @@ import "../src/trading/Router.sol";
  *   forge script script/Deploy.s.sol --rpc-url <RPC_URL> --broadcast --private-key <PK>
  *
  * Environment variables:
- *   COLLATERAL_TOKEN  - address of the ERC-20 used as collateral (required)
- *   DEPLOYER_ADDRESS  - deployer address (optional, defaults to msg.sender)
+ *   PRIVATE_KEY       - deployer private key (required)
+ *   INDEX_TOKEN       - ETH token address for price feed / position keys (required)
+ *   COLLATERAL_TOKEN  - USDC address; if unset, MockUSDC is deployed automatically
  */
 contract Deploy is Script {
 
@@ -44,12 +46,18 @@ contract Deploy is Script {
     Router              public router;
 
     function run() external {
-        address collateralToken = vm.envAddress("COLLATERAL_TOKEN");
-        address indexToken_     = vm.envAddress("INDEX_TOKEN");
-        uint256 deployerKey     = vm.envUint("PRIVATE_KEY");
-        address deployer        = vm.addr(deployerKey);
+        address indexToken_ = vm.envAddress("INDEX_TOKEN");
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        address deployer    = vm.addr(deployerKey);
 
         vm.startBroadcast(deployerKey);
+
+        // Deploy MockUSDC if no real USDC address provided
+        address collateralToken = vm.envOr("COLLATERAL_TOKEN", address(0));
+        if (collateralToken == address(0)) {
+            collateralToken = address(new MockUSDC());
+            console2.log("MockUSDC deployed:   ", collateralToken);
+        }
 
         // ── 1. Oracle ────────────────────────────────────────────────────────
         oracle = new PriceOracle();
