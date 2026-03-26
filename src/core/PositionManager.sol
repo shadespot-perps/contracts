@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./Vault.sol";
+import "./IVault.sol";
 import "../oracle/PriceOracle.sol";
 import "./FundingRateManager.sol";
 import "cofhe-contracts/FHE.sol";
@@ -21,7 +21,7 @@ contract PositionManager {
 
     mapping(bytes32 => Position) public positions;
 
-    Vault public vault;
+    IVault public vault;
     PriceOracle public oracle;
     FundingRateManager public fundingManager;
 
@@ -38,7 +38,7 @@ contract PositionManager {
     event PositionLiquidated(address trader, address token);
 
     constructor(address _vault, address _oracle, address _fundingManager) {
-        vault = Vault(_vault);
+        vault = IVault(_vault);
         oracle = PriceOracle(_oracle);
         fundingManager = FundingRateManager(_fundingManager);
         owner = msg.sender;

@@ -2,19 +2,29 @@
 pragma solidity ^0.8.20;
 
 import "../core/PositionManager.sol";
-import "../core/Vault.sol";
+import "../core/FHEVault.sol";
 import "../core/FundingRateManager.sol";
 import "./OrderManager.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../tokens/IEncryptedERC20.sol";
 
-contract Router {
+/**
+ * @title FHERouter
+ * @notice Pool 2 entry point — collateral is an FHE-encrypted ERC-20 token.
+ *
+ * Differences vs Router (Pool 1):
+ *   - collateralToken is IEncryptedERC20 (encrypted on-chain balances).
+ *   - vault is FHEVault (LP balances and liquidity counters are encrypted).
+ *   - All other logic (funding updates, position lifecycle, order flow) is
+ *     identical to the standard Router.
+ */
+contract FHERouter {
 
-    PositionManager public positionManager;
-    Vault public vault;
-    OrderManager public orderManager;
+    PositionManager  public positionManager;
+    FHEVault         public vault;
+    OrderManager     public orderManager;
     FundingRateManager public fundingManager;
 
-    IERC20 public collateralToken;
+    IEncryptedERC20 public collateralToken;
 
     /// @notice The only token that can be used as a trade (index) token in this pool.
     address public immutable indexToken;
@@ -36,7 +46,6 @@ contract Router {
     event OrderCreated(
         address indexed trader,
         address         token
-        // triggerPrice intentionally omitted — stored encrypted in OrderManager
     );
 
     event OrderExecuted(uint256 orderId);
@@ -54,11 +63,11 @@ contract Router {
     ) {
         require(_indexToken != address(0), "invalid index token");
         positionManager = PositionManager(_positionManager);
-        vault = Vault(_vault);
-        orderManager = OrderManager(_orderManager);
-        fundingManager = FundingRateManager(_fundingManager);
-        collateralToken = IERC20(_collateralToken);
-        indexToken = _indexToken;
+        vault           = FHEVault(_vault);
+        orderManager    = OrderManager(_orderManager);
+        fundingManager  = FundingRateManager(_fundingManager);
+        collateralToken = IEncryptedERC20(_collateralToken);
+        indexToken      = _indexToken;
     }
 
     // -------------------------------------------------
@@ -71,14 +80,11 @@ contract Router {
         uint256 leverage,
         bool isLong
     ) external {
-
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 
-        // update funding before opening
         fundingManager.updateFunding(token);
 
-        // transfer collateral
         collateralToken.transferFrom(
             msg.sender,
             address(vault),
@@ -93,32 +99,17 @@ contract Router {
             isLong
         );
 
-        emit OpenPosition(
-            msg.sender,
-            token,
-            collateral,
-            leverage,
-            isLong
-        );
+        emit OpenPosition(msg.sender, token, collateral, leverage, isLong);
     }
 
     // -------------------------------------------------
     // CLOSE POSITION
     // -------------------------------------------------
 
-    function closePosition(
-        address token,
-        bool isLong
-    ) external {
-
-        // update funding before closing
+    function closePosition(address token, bool isLong) external {
         fundingManager.updateFunding(token);
 
-        positionManager.closePosition(
-            msg.sender,
-            token,
-            isLong
-        );
+        positionManager.closePosition(msg.sender, token, isLong);
 
         emit ClosePosition(msg.sender, token, isLong);
     }
@@ -134,7 +125,6 @@ contract Router {
         uint256 triggerPrice,
         bool isLong
     ) external {
-
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 
@@ -171,7 +161,6 @@ contract Router {
     // -------------------------------------------------
 
     function executeOrder(uint256 orderId) external {
-
         (
             address trader,
             address token,
@@ -180,7 +169,6 @@ contract Router {
             bool isLong
         ) = orderManager.executeOrder(orderId);
 
-        // update funding before executing
         fundingManager.updateFunding(token);
 
         positionManager.openPosition(
@@ -199,7 +187,6 @@ contract Router {
     // -------------------------------------------------
 
     function addLiquidity(uint256 amount) external {
-
         collateralToken.transferFrom(
             msg.sender,
             address(vault),
@@ -212,7 +199,6 @@ contract Router {
     }
 
     function removeLiquidity(uint256 amount) external {
-
         vault.withdraw(amount);
 
         emit RemoveLiquidity(msg.sender, amount);

@@ -24,21 +24,23 @@ contract UserFlowTest is Test {
     OrderManager       orderManager;
     PriceOracle        oracle;
     ERC20Mock          collateralToken;
+    ERC20Mock          ethMock;        // stand-in for ETH — only needs an address for the oracle
 
     address owner     = address(this);
     address trader    = address(0x100);
     address liquidator = address(0x200);
-    address token;
+    address token;     // ETH index token address
 
     function setUp() public {
         vm.etch(TASK_MANAGER, address(new MockTaskManager()).code);
 
-        collateralToken = new ERC20Mock();
-        token = address(collateralToken);
+        collateralToken = new ERC20Mock();   // USDC collateral
+        ethMock         = new ERC20Mock();   // ETH trade token (price feed only)
+        token           = address(ethMock);
 
         oracle         = new PriceOracle();
         fundingManager = new FundingRateManager();
-        vault          = new Vault(token, owner);
+        vault          = new Vault(address(collateralToken), owner);
         positionManager = new PositionManager(address(vault), address(oracle), address(fundingManager));
 
         // LiquidationManager: positionManager + fundingManager only
@@ -50,7 +52,8 @@ contract UserFlowTest is Test {
             address(vault),
             address(orderManager),
             address(fundingManager),
-            address(collateralToken)
+            address(collateralToken),
+            token                      // indexToken = ETH
         );
 
         positionManager.setRouter(address(router));

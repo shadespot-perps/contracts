@@ -29,7 +29,8 @@ contract InvariantHandler is Test {
     Vault              theVault;
     Router             router;
     PriceOracle        oracle;
-    ERC20Mock          token;
+    ERC20Mock          collateral; // USDC collateral token
+    ERC20Mock          ethMock;    // ETH index token (price feed only)
 
     address owner   = address(this);
     address[] traders;
@@ -41,15 +42,23 @@ contract InvariantHandler is Test {
     constructor() {
         vm.etch(TASK_MANAGER, address(new MockTaskManager()).code);
 
-        token   = new ERC20Mock();
+        collateral = new ERC20Mock();
+        ethMock    = new ERC20Mock();   // ETH — address used for oracle + positions
         oracle  = new PriceOracle();
         frm     = new FundingRateManager();
-        theVault   = new Vault(address(token), owner);
+        theVault   = new Vault(address(collateral), owner);
         pm      = new PositionManager(address(theVault), address(oracle), address(frm));
         lm      = new LiquidationManager(address(pm), address(frm));
 
         OrderManager om = new OrderManager(address(oracle), address(frm), owner);
-        router = new Router(address(pm), address(theVault), address(om), address(frm), address(token));
+        router = new Router(
+            address(pm),
+            address(theVault),
+            address(om),
+            address(frm),
+            address(collateral),
+            address(ethMock)    // indexToken = ETH
+        );
 
         pm.setRouter(address(router));
         pm.setLiquidationManager(address(lm));
@@ -59,31 +68,31 @@ contract InvariantHandler is Test {
         frm.setRouter(address(router));
         om.setRouter(address(router));
 
-        oracle.setPrice(address(token), 2000 * 1e18);
+        oracle.setPrice(address(ethMock), 2000 * 1e18);
 
-        token.mint(owner, 1_000_000 * 1e18);
-        token.approve(address(router), 1_000_000 * 1e18);
+        collateral.mint(owner, 1_000_000 * 1e18);
+        collateral.approve(address(router), 1_000_000 * 1e18);
         router.addLiquidity(1_000_000 * 1e18);
 
         // Pre-fund some trader addresses
         for (uint256 i = 1; i <= 5; i++) {
             address t = address(uint160(i * 0x1000));
             traders.push(t);
-            token.mint(t, 10_000 * 1e18);
+            collateral.mint(t, 10_000 * 1e18);
             vm.prank(t);
-            token.approve(address(router), 10_000 * 1e18);
+            collateral.approve(address(router), 10_000 * 1e18);
         }
     }
 
-    function openPosition(uint256 traderIdx, uint256 collateral, uint256 leverage, bool isLong) public {
+    function openPosition(uint256 traderIdx, uint256 amount, uint256 leverage, bool isLong) public {
         traderIdx = bound(traderIdx, 0, traders.length - 1);
-        collateral = bound(collateral, 1 * 1e18, 1000 * 1e18);
+        amount     = bound(amount, 1 * 1e18, 1000 * 1e18);
         leverage   = bound(leverage, 1, 10);
 
         address t = traders[traderIdx];
         vm.prank(t);
-        try router.openPosition(address(token), collateral, leverage, isLong) {
-            openPositionKeys.push(pm.getPositionKey(t, address(token), isLong));
+        try router.openPosition(address(ethMock), amount, leverage, isLong) {
+            openPositionKeys.push(pm.getPositionKey(t, address(ethMock), isLong));
         } catch {}
     }
 
@@ -91,12 +100,12 @@ contract InvariantHandler is Test {
         traderIdx = bound(traderIdx, 0, traders.length - 1);
         address t = traders[traderIdx];
         vm.prank(t);
-        try router.closePosition(address(token), isLong) {} catch {}
+        try router.closePosition(address(ethMock), isLong) {} catch {}
     }
 
     function setPrice(uint256 price) public {
         price = bound(price, 100 * 1e18, 10000 * 1e18);
-        oracle.setPrice(address(token), price);
+        oracle.setPrice(address(ethMock), price);
     }
 }
 
