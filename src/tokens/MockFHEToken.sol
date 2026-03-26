@@ -1,94 +1,37 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.25;
 
-import "cofhe-contracts/FHE.sol";
-import "./IEncryptedERC20.sol";
+import { FHERC20 } from "fhenix-confidential-contracts/FHERC20.sol";
 
 /**
  * @title MockFHEToken
- * @notice ERC-20 token whose per-address balances are stored as FHE ciphertexts
- *         (euint128). Transfer amounts are accepted as plaintext (the caller knows
- *         their own amount); the on-chain state is never readable as plaintext by
- *         observers — only the balance owner can decrypt via the CoFHE gateway.
+ * @notice Concrete FHERC20 token used as collateral in Pool 2 (FHE token / ETH).
  *
- * In Foundry tests, etch MockTaskManager at TASK_MANAGER_ADDRESS so all FHE ops
- * execute synchronously with plaintext handles.
+ * Extends the Fhenix confidential-contracts FHERC20 base which:
+ *   - Stores per-address balances as `euint64` FHE ciphertexts.
+ *   - Provides `confidentialTransfer` / `confidentialTransferFrom` instead of
+ *     the standard ERC-20 transfer functions (those deliberately revert).
+ *   - Uses an operator model (setOperator) instead of approve/allowance.
  *
- * Allowances are stored as plaintext uint256 for simplicity (standard ERC-20
- * approve/transferFrom pattern).
+ * In Foundry tests, etch MockTaskManager at TASK_MANAGER_ADDRESS in setUp so all
+ * FHE operations execute synchronously with plaintext-as-handle semantics.
  */
-contract MockFHEToken is IEncryptedERC20 {
+contract MockFHEToken is FHERC20 {
 
-    string public name;
-    string public symbol;
-    uint8  public constant decimals = 18;
-
-    // Encrypted balances — not readable on-chain without FHE gateway
-    mapping(address => euint128) private _encBalances;
-
-    // Plaintext allowances (standard ERC-20)
-    mapping(address => mapping(address => uint256)) private _allowances;
-
-    event Transfer(address indexed from, address indexed to, uint256 amount);
-    event Approval(address indexed owner, address indexed spender, uint256 amount);
-
-    constructor(string memory _name, string memory _symbol) {
-        name   = _name;
-        symbol = _symbol;
-    }
+    constructor(
+        string memory name_,
+        string memory symbol_
+    ) FHERC20(name_, symbol_, 18) {}
 
     // -------------------------------------------------------
-    // MINT (test / admin only — no access control for mock)
+    // Mint / burn — no access control (test / dev token)
     // -------------------------------------------------------
 
-    function mint(address to, uint256 amount) external {
-        euint128 eAmount = FHE.asEuint128(amount);
-        _encBalances[to] = FHE.add(_encBalances[to], eAmount);
-        emit Transfer(address(0), to, amount);
+    function mint(address to, uint64 amount) external {
+        _mint(to, amount);
     }
 
-    // -------------------------------------------------------
-    // ERC-20 INTERFACE
-    // -------------------------------------------------------
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        _allowances[msg.sender][spender] = amount;
-        emit Approval(msg.sender, spender, amount);
-        return true;
-    }
-
-    function allowance(address owner, address spender) external view returns (uint256) {
-        return _allowances[owner][spender];
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        _encTransfer(msg.sender, to, amount);
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        uint256 allowed = _allowances[from][msg.sender];
-        require(allowed >= amount, "FHEToken: insufficient allowance");
-        _allowances[from][msg.sender] = allowed - amount;
-        _encTransfer(from, to, amount);
-        return true;
-    }
-
-    // -------------------------------------------------------
-    // INTERNAL — encrypted balance update
-    // -------------------------------------------------------
-
-    function _encTransfer(address from, address to, uint256 amount) internal {
-        euint128 eAmount = FHE.asEuint128(amount);
-
-        // Encrypted balance-sufficient check — only one bit is decrypted
-        ebool hasBal = FHE.gte(_encBalances[from], eAmount);
-        (bool ok, bool decOk) = FHE.getDecryptResultSafe(hasBal);
-        require(decOk && ok, "FHEToken: insufficient encrypted balance");
-
-        _encBalances[from] = FHE.sub(_encBalances[from], eAmount);
-        _encBalances[to]   = FHE.add(_encBalances[to],   eAmount);
-
-        emit Transfer(from, to, amount);
+    function burn(address from, uint64 amount) external {
+        _burn(from, amount);
     }
 }
