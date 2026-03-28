@@ -190,6 +190,138 @@ The `MockTaskManager` is etched at the CoFHE `TASK_MANAGER_ADDRESS` in each test
 
 ---
 
+## Test Logs
+
+``` bash
+
+Ran 4 tests for test/unit/PnlUtils.t.sol:PnlUtilsTest
+[PASS] test_CalculatePnL_Long_Loss() (gas: 2474)
+[PASS] test_CalculatePnL_Long_Profit() (gas: 2147)
+[PASS] test_CalculatePnL_Short_Profit() (gas: 1721)
+[PASS] test_ZeroEntryPrice() (gas: 707)
+Suite result: ok. 4 passed; 0 failed; 0 skipped; finished in 480.69µs (385.71µs CPU time)
+
+Ran 13 tests for test/unit/Vault.t.sol:VaultTest
+[PASS] test_Deposit() (gas: 63955)
+[PASS] test_DepositRevert_OnlyRouter() (gas: 13958)
+[PASS] test_DepositRevert_ZeroAmount() (gas: 14008)
+[PASS] test_Initialization() (gas: 23276)
+[PASS] test_PayTrader_OnlyCollateral() (gas: 147843)
+[PASS] test_PayTrader_ProfitAndCollateral() (gas: 149854)
+[PASS] test_ReceiveLoss() (gas: 66563)
+[PASS] test_ReleaseLiquidity() (gas: 92795)
+[PASS] test_ReserveLiquidity() (gas: 90142)
+[PASS] test_ReserveLiquidity_Revert_InsufficientVaultLiquidity() (gas: 18111)
+[PASS] test_Withdraw() (gas: 144988)
+[PASS] test_WithdrawRevert_InsufficientBalance() (gas: 15665)
+[PASS] test_WithdrawRevert_LiquidityLocked() (gas: 142343)
+Suite result: ok. 13 passed; 0 failed; 0 skipped; finished in 3.30ms (1.40ms CPU time)
+
+Ran 5 tests for test/unit/PositionManager.t.sol:PositionManagerTest
+[PASS] test_CalculatePnL_Long() (gas: 113552)
+[PASS] test_CalculatePnL_Short() (gas: 119616)
+[PASS] test_ClosePosition_Profit() (gas: 361767)
+[PASS] test_OpenPosition_HappyPath() (gas: 289626)
+[PASS] test_OpenPosition_Revert_MaxLeverage() (gas: 18147)
+Suite result: ok. 5 passed; 0 failed; 0 skipped; finished in 4.46ms (4.61ms CPU time)
+
+Ran 8 tests for test/unit/FundingRateManager.t.sol:FundingRateManagerTest
+[PASS] test_DecreaseOpenInterest() (gas: 47173)
+[PASS] test_IncreaseOpenInterest() (gas: 42545)
+[PASS] test_OI_Revert_OnlyPositionManager() (gas: 13017)
+[PASS] test_UpdateFunding_CumulatesAcrossIntervals() (gas: 120939)
+[PASS] test_UpdateFunding_LongDominant() (gas: 115892)
+[PASS] test_UpdateFunding_NoOI_NoChange() (gas: 41188)
+[PASS] test_UpdateFunding_ShortDominant() (gas: 116038)
+[PASS] test_UpdateFunding_TooEarly_NoChange() (gas: 48615)
+Suite result: ok. 8 passed; 0 failed; 0 skipped; finished in 4.49ms (982.08µs CPU time)
+
+Ran 6 tests for test/unit/OrderManager.t.sol:OrderManagerTest
+[PASS] test_CancelOrder() (gas: 188190)
+[PASS] test_CancelOrder_Revert_NotOwner() (gas: 204912)
+[PASS] test_CreateOrder() (gas: 205958)
+[PASS] test_ExecuteOrder_Long() (gas: 254230)
+[PASS] test_ExecuteOrder_Long_Revert_PriceNotReached() (gas: 262637)
+[PASS] test_ExecuteOrder_Short() (gas: 234487)
+Suite result: ok. 6 passed; 0 failed; 0 skipped; finished in 8.32ms (1.22ms CPU time)
+
+Ran 4 tests for test/integration/UserFlow.t.sol:UserFlowTest
+[PASS] test_Flow_AddRemoveLiquidity() (gas: 107620)
+[PASS] test_Flow_Liquidation() (gas: 431390)
+[PASS] test_Flow_OpenClose_Loss() (gas: 414916)
+[PASS] test_Flow_OpenClose_Profit() (gas: 414860)
+Suite result: ok. 4 passed; 0 failed; 0 skipped; finished in 8.37ms (5.34ms CPU time)
+
+Ran 4 tests for test/unit/LiquidationManager.t.sol:LiquidationManagerTest
+[PASS] test_Liquidate_PaysLiquidatorReward() (gas: 367979)
+[PASS] test_Liquidate_RemovesPosition() (gas: 368838)
+[PASS] test_Liquidate_Revert_NotLiquidatable() (gas: 410051)
+[PASS] test_Liquidate_VaultAbsorbsLoss() (gas: 367739)
+Suite result: ok. 4 passed; 0 failed; 0 skipped; finished in 8.37ms (6.18ms CPU time)
+
+Ran 33 tests for test/unit/FHEPool.t.sol:FHEPoolTest
+[PASS] test_FHERouter_AddLiquidity_VaultEncryptedLiquidityGrows() (gas: 142512)
+[PASS] test_FHERouter_ClosePosition_Loss_TraderReceivesReducedPayout() (gas: 453336)
+[PASS] test_FHERouter_ClosePosition_Loss_VaultTokenBalanceIncreases() (gas: 452657)
+[PASS] test_FHERouter_ClosePosition_PositionDeleted() (gas: 453428)
+[PASS] test_FHERouter_ClosePosition_Profit_TraderReceivesPayout() (gas: 452945)
+[PASS] test_FHERouter_ClosePosition_Profit_VaultTokenBalanceDecreases() (gas: 453182)
+[PASS] test_FHERouter_Liquidation_LiquidatorReceivesReward() (gas: 503449)
+[PASS] test_FHERouter_Liquidation_NotLiquidatable_Reverts() (gas: 524111)
+[PASS] test_FHERouter_Liquidation_PositionDeleted() (gas: 505416)
+[PASS] test_FHERouter_OpenPosition_CollateralMovedToVault() (gas: 383103)
+[PASS] test_FHERouter_OpenPosition_Long_PositionExists() (gas: 386491)
+[PASS] test_FHERouter_OpenPosition_NoOperator_Reverts() (gas: 120608)
+[PASS] test_FHERouter_OpenPosition_WrongToken_Reverts() (gas: 11838)
+[PASS] test_FHERouter_RemoveLiquidity_Works() (gas: 161340)
+[PASS] test_FHEToken_ConfidentialTransferFrom_NoOperator_Reverts() (gas: 103740)
+[PASS] test_FHEToken_ConfidentialTransferFrom_WithOperator_Works() (gas: 172876)
+[PASS] test_FHEToken_Mint_EncryptedBalanceCorrect() (gas: 90853)
+[PASS] test_FHEToken_SetOperator_IsOperator_True() (gas: 37143)
+[PASS] test_FHEToken_StandardApprove_Reverts() (gas: 9229)
+[PASS] test_FHEToken_StandardTransferFrom_Reverts() (gas: 8983)
+[PASS] test_FHEToken_StandardTransfer_Reverts() (gas: 9713)
+[PASS] test_FHEVault_Deposit_EncryptedLiquidityUpdated() (gas: 11341)
+[PASS] test_FHEVault_LPBalance_Encrypted() (gas: 14063)
+[PASS] test_FHEVault_LPBalance_IsEncrypted() (gas: 13689)
+[PASS] test_FHEVault_ReceiveLoss_EncryptedLiquidityIncreases() (gas: 29024)
+[PASS] test_FHEVault_ReleaseLiquidity_EncryptedReservedDecreases() (gas: 55918)
+[PASS] test_FHEVault_ReserveLiquidity_EncryptedReservedUpdated() (gas: 61965)
+[PASS] test_FHEVault_ReserveLiquidity_Insufficient_Reverts() (gas: 33984)
+[PASS] test_FHEVault_TotalLiquidity_IsEncrypted_NotPlaintext() (gas: 11803)
+[PASS] test_FHEVault_Withdraw_InsufficientBalance_Reverts() (gas: 25901)
+[PASS] test_FHEVault_Withdraw_LiquidityLocked_Reverts() (gas: 399215)
+[PASS] test_FHEVault_Withdraw_ReducesEncryptedBalance() (gas: 160988)
+[PASS] test_FHEVault_Withdraw_TransfersTokensToLP() (gas: 161376)
+Suite result: ok. 33 passed; 0 failed; 0 skipped; finished in 8.43ms (32.68ms CPU time)
+
+Ran 1 test for test/fuzz/PnlUtils.t.sol:PnlUtilsFuzzTest
+[PASS] testFuzz_CalculatePnL(uint256,uint256,uint256,bool) (runs: 257, μ: 5237, ~: 5231)
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 19.73ms (19.28ms CPU time)
+
+Ran 1 test for test/fuzz/FundingRateManager.t.sol:FundingRateManagerFuzzTest
+[PASS] testFuzz_FundingRateCalculationLimits(uint256,uint256) (runs: 256, μ: 117525, ~: 118817)
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 30.95ms (30.59ms CPU time)
+
+Ran 1 test for test/invariant/InvariantTest.t.sol:InvariantTest
+[PASS] invariant_VaultSolvent() (runs: 256, calls: 128000, reverts: 0)
+
+╭------------------+---------------+-------+---------+----------╮
+| Contract         | Selector      | Calls | Reverts | Discards |
++===============================================================+
+| InvariantHandler | closePosition | 42976 | 0       | 0        |
+|------------------+---------------+-------+---------+----------|
+| InvariantHandler | openPosition  | 42619 | 0       | 0        |
+|------------------+---------------+-------+---------+----------|
+| InvariantHandler | setPrice      | 42405 | 0       | 0        |
+╰------------------+---------------+-------+---------+----------╯
+
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 26.51s (26.51s CPU time)
+
+Ran 11 test suites in 26.51s (26.61s CPU time): 80 tests passed, 0 failed, 0 skipped (80 total tests)
+
+```
+
 ## Deployment
 
 ### Pool 1 only
