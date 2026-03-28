@@ -1,4 +1,16 @@
 {
+  "lib/cofhe-contracts": {
+    "tag": {
+      "name": "v0.1.1",
+      "rev": "f6848aadce99d32d00016783cdb1dd6725919716"
+    }
+  },
+  "lib/fhenix-confidential-contracts": {
+    "tag": {
+      "name": "v0.2.1",
+      "rev": "b5ac4e840cdb8f4d6656f671cfd8d7b15657c85f"
+    }
+  },
   "lib/forge-std": {
     "tag": {
       "name": "v1.15.0",

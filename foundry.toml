@@ -2,12 +2,18 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+via_ir = true
+optimizer = true
+optimizer_runs = 200
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "erc4626-tests/=lib/openzeppelin-contracts/lib/erc4626-tests/",
     "forge-std/=lib/forge-std/src/",
     "halmos-cheatcodes/=lib/openzeppelin-contracts/lib/halmos-cheatcodes/src/",
-    "openzeppelin-contracts/=lib/openzeppelin-contracts/"
+    "openzeppelin-contracts/=lib/openzeppelin-contracts/",
+    "cofhe-contracts/=lib/cofhe-contracts/contracts",
+    "@fhenixprotocol/cofhe-contracts/=lib/cofhe-contracts/contracts/",
+    "fhenix-confidential-contracts/=lib/fhenix-confidential-contracts/contracts/"
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

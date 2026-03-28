@@ -1,20 +1,34 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.25;
 
 import "../core/PositionManager.sol";
-import "../core/Vault.sol";
+import "../core/FHEVault.sol";
 import "../core/FundingRateManager.sol";
 import "./OrderManager.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../tokens/IEncryptedERC20.sol";
+import { FHE, euint64 } from "cofhe-contracts/FHE.sol";
 
-contract Router {
+/**
+ * @title FHERouter
+ * @notice Pool 2 entry point — collateral is a Fhenix FHERC20 token.
+ *
+ * Key differences from Router (Pool 1):
+ *   - collateralToken is IEncryptedERC20 (Fhenix FHERC20 with encrypted balances).
+ *   - Token transfers use confidentialTransferFrom instead of transferFrom.
+ *   - Instead of approve, users must call:
+ *       fheToken.setOperator(address(fheRouter), untilTimestamp)
+ *     once before their first trade or liquidity deposit.
+ *   - vault is FHEVault (LP balances and pool counters stored as euint64 ciphertexts).
+ *   - indexToken is enforced — only ETH positions are accepted.
+ */
+contract FHERouter {
 
-    PositionManager public positionManager;
-    Vault public vault;
-    OrderManager public orderManager;
+    PositionManager    public positionManager;
+    FHEVault           public vault;
+    OrderManager       public orderManager;
     FundingRateManager public fundingManager;
 
-    IERC20 public collateralToken;
+    IEncryptedERC20 public collateralToken;
 
     /// @notice The only token that can be used as a trade (index) token in this pool.
     address public immutable indexToken;
@@ -36,7 +50,6 @@ contract Router {
     event OrderCreated(
         address indexed trader,
         address         token
-        // triggerPrice intentionally omitted — stored encrypted in OrderManager
     );
 
     event OrderExecuted(uint256 orderId);
@@ -54,72 +67,50 @@ contract Router {
     ) {
         require(_indexToken != address(0), "invalid index token");
         positionManager = PositionManager(_positionManager);
-        vault = Vault(_vault);
-        orderManager = OrderManager(_orderManager);
-        fundingManager = FundingRateManager(_fundingManager);
-        collateralToken = IERC20(_collateralToken);
-        indexToken = _indexToken;
+        vault           = FHEVault(_vault);
+        orderManager    = OrderManager(_orderManager);
+        fundingManager  = FundingRateManager(_fundingManager);
+        collateralToken = IEncryptedERC20(_collateralToken);
+        indexToken      = _indexToken;
     }
 
     // -------------------------------------------------
     // MARKET ORDER (OPEN POSITION)
     // -------------------------------------------------
 
+    /**
+     * @notice Open a leveraged position using FHE token as collateral.
+     * @dev Caller must have granted this router operator status on the FHE token:
+     *      fheToken.setOperator(address(fheRouter), untilTimestamp)
+     */
     function openPosition(
         address token,
         uint256 collateral,
         uint256 leverage,
         bool isLong
     ) external {
-
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 
-        // update funding before opening
         fundingManager.updateFunding(token);
 
-        // transfer collateral
-        collateralToken.transferFrom(
-            msg.sender,
-            address(vault),
-            collateral
-        );
+        // Confidential transfer: router (operator) moves collateral from trader → vault
+        euint64 eCollateral = FHE.asEuint64(uint64(collateral));
+        FHE.allow(eCollateral, address(collateralToken));
+        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
 
-        positionManager.openPosition(
-            msg.sender,
-            token,
-            collateral,
-            leverage,
-            isLong
-        );
+        positionManager.openPosition(msg.sender, token, collateral, leverage, isLong);
 
-        emit OpenPosition(
-            msg.sender,
-            token,
-            collateral,
-            leverage,
-            isLong
-        );
+        emit OpenPosition(msg.sender, token, collateral, leverage, isLong);
     }
 
     // -------------------------------------------------
     // CLOSE POSITION
     // -------------------------------------------------
 
-    function closePosition(
-        address token,
-        bool isLong
-    ) external {
-
-        // update funding before closing
+    function closePosition(address token, bool isLong) external {
         fundingManager.updateFunding(token);
-
-        positionManager.closePosition(
-            msg.sender,
-            token,
-            isLong
-        );
-
+        positionManager.closePosition(msg.sender, token, isLong);
         emit ClosePosition(msg.sender, token, isLong);
     }
 
@@ -127,6 +118,10 @@ contract Router {
     // CREATE LIMIT ORDER
     // -------------------------------------------------
 
+    /**
+     * @notice Create a limit/trigger order using FHE token collateral.
+     * @dev Caller must have granted this router operator status on the FHE token.
+     */
     function createOrder(
         address token,
         uint256 collateral,
@@ -134,24 +129,14 @@ contract Router {
         uint256 triggerPrice,
         bool isLong
     ) external {
-
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 
-        collateralToken.transferFrom(
-            msg.sender,
-            address(vault),
-            collateral
-        );
+        euint64 eCollateral = FHE.asEuint64(uint64(collateral));
+        FHE.allow(eCollateral, address(collateralToken));
+        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
 
-        orderManager.createOrder(
-            msg.sender,
-            token,
-            collateral,
-            leverage,
-            triggerPrice,
-            isLong
-        );
+        orderManager.createOrder(msg.sender, token, collateral, leverage, triggerPrice, isLong);
 
         emit OrderCreated(msg.sender, token);
     }
@@ -171,7 +156,6 @@ contract Router {
     // -------------------------------------------------
 
     function executeOrder(uint256 orderId) external {
-
         (
             address trader,
             address token,
@@ -180,16 +164,8 @@ contract Router {
             bool isLong
         ) = orderManager.executeOrder(orderId);
 
-        // update funding before executing
         fundingManager.updateFunding(token);
-
-        positionManager.openPosition(
-            trader,
-            token,
-            collateral,
-            leverage,
-            isLong
-        );
+        positionManager.openPosition(trader, token, collateral, leverage, isLong);
 
         emit OrderExecuted(orderId);
     }
@@ -198,23 +174,20 @@ contract Router {
     // LIQUIDITY FUNCTIONS
     // -------------------------------------------------
 
+    /**
+     * @notice Add liquidity to Pool 2 vault using FHE token.
+     * @dev Caller must have granted this router operator status on the FHE token.
+     */
     function addLiquidity(uint256 amount) external {
-
-        collateralToken.transferFrom(
-            msg.sender,
-            address(vault),
-            amount
-        );
-
+        euint64 eAmount = FHE.asEuint64(uint64(amount));
+        FHE.allow(eAmount, address(collateralToken));
+        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eAmount);
         vault.deposit(amount);
-
         emit AddLiquidity(msg.sender, amount);
     }
 
     function removeLiquidity(uint256 amount) external {
-
         vault.withdraw(amount);
-
         emit RemoveLiquidity(msg.sender, amount);
     }
 }
