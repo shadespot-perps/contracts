@@ -89,6 +89,8 @@ contract UserFlowTest is Test {
 
         vm.prank(trader);
         router.closePosition(token, true);
+        // Finalize with proof (MockTaskManager accepts any signature).
+        positionManager.finalizeClosePosition(trader, token, true, 1500 * 1e18, "", collateral * 5, "");
 
         // PnL = (2200-2000)*5000/2000 = 500. Payout = 1000+500 = 1500.
         assertEq(collateralToken.balanceOf(trader), 1500 * 1e18);
@@ -111,6 +113,8 @@ contract UserFlowTest is Test {
 
         vm.prank(trader);
         router.closePosition(token, true);
+        // PnL loss = 500. Payout = 1000-500 = 500.
+        positionManager.finalizeClosePosition(trader, token, true, 500 * 1e18, "", collateral * 5, "");
 
         // PnL loss = 500. Payout = 1000-500 = 500.
         assertEq(collateralToken.balanceOf(trader), 500 * 1e18);
@@ -134,6 +138,10 @@ contract UserFlowTest is Test {
 
         vm.prank(liquidator);
         liquidationManager.liquidate(trader, token, true);
+        // Finalize liquidation with proof (MockTaskManager accepts any signature).
+        // Collateral=1000, size=10000.
+        vm.prank(liquidator);
+        liquidationManager.finalizeLiquidation(trader, token, true, true, "", 1000 * 1e18, "", 10_000 * 1e18, "");
 
         // 5% liquidator reward
         assertEq(collateralToken.balanceOf(liquidator), 50 * 1e18);

@@ -110,7 +110,7 @@ contract FHERouter {
 
     function closePosition(address token, bool isLong) external {
         fundingManager.updateFunding(token);
-        positionManager.closePosition(msg.sender, token, isLong);
+        positionManager.requestClosePosition(msg.sender, token, isLong);
         emit ClosePosition(msg.sender, token, isLong);
     }
 

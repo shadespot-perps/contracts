@@ -359,6 +359,8 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
+        // Finalize with proof (MockTaskManager accepts any signature).
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -377,6 +379,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
 
         // Vault paid out COLLATERAL + PNL to trader.
         // Remaining vault balance = LP_SEED + COLLATERAL - (COLLATERAL + PNL) = LP_SEED - PNL
@@ -400,6 +403,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -417,6 +421,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
 
         // Vault received COLLATERAL on open, paid out (COLLATERAL - PNL) on close.
         // Net gain = PNL. Vault token balance = LP_SEED + PNL.
@@ -434,6 +439,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
 
         bytes32 key = pm.getPositionKey(trader, ethToken, true);
         assertFalse(pm.getPosition(key).exists);
@@ -476,6 +482,18 @@ contract FHEPoolTest is Test {
 
         vm.prank(liquidator);
         lm.liquidate(trader, ethToken, true);
+        vm.prank(liquidator);
+        lm.finalizeLiquidation(
+            trader,
+            ethToken,
+            true,
+            true,
+            "",
+            uint256(COLLATERAL),
+            "",
+            uint256(COLLATERAL) * uint256(bigLeverage),
+            ""
+        );
 
         // 5 % of COLLATERAL = 50e6
         uint64 expectedReward = uint64(COLLATERAL) * 5 / 100;
@@ -495,6 +513,18 @@ contract FHEPoolTest is Test {
 
         vm.prank(liquidator);
         lm.liquidate(trader, ethToken, true);
+        vm.prank(liquidator);
+        lm.finalizeLiquidation(
+            trader,
+            ethToken,
+            true,
+            true,
+            "",
+            uint256(COLLATERAL),
+            "",
+            uint256(COLLATERAL) * uint256(bigLeverage),
+            ""
+        );
 
         bytes32 key = pm.getPositionKey(trader, ethToken, true);
         assertFalse(pm.getPosition(key).exists);
@@ -506,8 +536,21 @@ contract FHEPoolTest is Test {
 
         // Price unchanged — position not liquidatable
         vm.prank(liquidator);
-        vm.expectRevert("not liquidatable");
         lm.liquidate(trader, ethToken, true);
+
+        vm.prank(liquidator);
+        vm.expectRevert("not liquidatable");
+        lm.finalizeLiquidation(
+            trader,
+            ethToken,
+            true,
+            false,
+            "",
+            uint256(COLLATERAL),
+            "",
+            uint256(COLLATERAL) * uint256(LEVERAGE),
+            ""
+        );
     }
 
     // ======================================================================

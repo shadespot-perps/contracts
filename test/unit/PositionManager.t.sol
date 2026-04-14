@@ -110,10 +110,11 @@ contract PositionManagerTest is Test {
         oracle.setPrice(token, 2200 * 1e18);
 
         vm.prank(router);
-        pm.closePosition(trader, token, isLong);
-
+        pm.requestClosePosition(trader, token, isLong);
         // PnL = (2200 - 2000) * 5000 / 2000 = 500
         // Payout = 1000 + 500 = 1500
+        pm.finalizeClosePosition(trader, token, isLong, 1500 * 1e18, "", collateral * leverage, "");
+
         assertEq(collateralToken.balanceOf(trader), 1500 * 1e18);
 
         bytes32 key = pm.getPositionKey(trader, token, isLong);

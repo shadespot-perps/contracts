@@ -4,6 +4,7 @@ pragma solidity ^0.8.25;
 import "./IVault.sol";
 import "../tokens/IEncryptedERC20.sol";
 import { FHE, euint64, ebool } from "cofhe-contracts/FHE.sol";
+import {ITaskManager} from "cofhe-contracts/ICofhe.sol";
 
 /**
  * @title FHEVault
@@ -27,6 +28,8 @@ import { FHE, euint64, ebool } from "cofhe-contracts/FHE.sol";
  * Implements IVault so PositionManager can use it interchangeably with Vault.
  */
 contract FHEVault is IVault {
+    // Must match the address used by cofhe-contracts' `FHE.sol` in this repo.
+    address private constant TASK_MANAGER = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
 
     IEncryptedERC20 public immutable collateralToken;
 
@@ -91,6 +94,10 @@ contract FHEVault is IVault {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         lpBalance[msg.sender] = FHE.add(lpBalance[msg.sender], eAmount);
         totalLiquidity        = FHE.add(totalLiquidity, eAmount);
+
+        // CoFHE ACL: persistently allow this vault to use updated stored handles.
+        FHE.allow(lpBalance[msg.sender], address(this));
+        FHE.allow(totalLiquidity, address(this));
         emit Deposit(msg.sender, amount);
     }
 
@@ -103,17 +110,31 @@ contract FHEVault is IVault {
 
         // Encrypted check: LP has enough balance
         ebool hasBal = FHE.gte(lpBalance[msg.sender], eAmount);
+        FHE.allowTransient(hasBal, address(this));
         (bool balOk, bool decBal) = FHE.getDecryptResultSafe(hasBal);
-        require(decBal && balOk, "Insufficient balance");
+        if (!decBal) {
+            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasBal)), msg.sender);
+            revert("decrypt not ready");
+        }
+        require(balOk, "Insufficient balance");
 
         // Encrypted check: enough free liquidity
         euint64 eAvail = FHE.sub(totalLiquidity, totalReserved);
         ebool hasLiq = FHE.gte(eAvail, eAmount);
+        FHE.allowTransient(hasLiq, address(this));
         (bool liqOk, bool decLiq) = FHE.getDecryptResultSafe(hasLiq);
-        require(decLiq && liqOk, "Liquidity locked");
+        if (!decLiq) {
+            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), msg.sender);
+            revert("decrypt not ready");
+        }
+        require(liqOk, "Liquidity locked");
 
         lpBalance[msg.sender] = FHE.sub(lpBalance[msg.sender], eAmount);
         totalLiquidity        = FHE.sub(totalLiquidity, eAmount);
+
+        // CoFHE ACL: allow updated stored handles.
+        FHE.allow(lpBalance[msg.sender], address(this));
+        FHE.allow(totalLiquidity, address(this));
 
         // Vault is msg.sender on the token — always authorised to spend its balance
         FHE.allow(eAmount, address(collateralToken));
@@ -131,10 +152,16 @@ contract FHEVault is IVault {
         euint64 eAvail  = FHE.sub(totalLiquidity, totalReserved);
 
         ebool hasLiq = FHE.gte(eAvail, eAmount);
+        FHE.allowTransient(hasLiq, address(this));
         (bool ok, bool decOk) = FHE.getDecryptResultSafe(hasLiq);
-        require(decOk && ok, "Insufficient vault liquidity");
+        if (!decOk) {
+            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), msg.sender);
+            revert("decrypt not ready");
+        }
+        require(ok, "Insufficient vault liquidity");
 
         totalReserved = FHE.add(totalReserved, eAmount);
+        FHE.allow(totalReserved, address(this));
         emit IncreaseReserved(amount);
     }
 
@@ -142,10 +169,16 @@ contract FHEVault is IVault {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
 
         ebool ok = FHE.gte(totalReserved, eAmount);
+        FHE.allowTransient(ok, address(this));
         (bool valid, bool decOk) = FHE.getDecryptResultSafe(ok);
-        require(decOk && valid, "Invalid release");
+        if (!decOk) {
+            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(ok)), msg.sender);
+            revert("decrypt not ready");
+        }
+        require(valid, "Invalid release");
 
         totalReserved = FHE.sub(totalReserved, eAmount);
+        FHE.allow(totalReserved, address(this));
         emit DecreaseReserved(amount);
     }
 
@@ -161,11 +194,16 @@ contract FHEVault is IVault {
 
             // Cap profit at available liquidity (encrypted select, then decrypt result)
             euint64 eActual = FHE.select(FHE.gt(eProfit, eAvail), eAvail, eProfit);
+            FHE.allowTransient(eActual, address(this));
             (uint64 decProfit, bool decOk) = FHE.getDecryptResultSafe(eActual);
-            require(decOk, "decrypt not ready");
+            if (!decOk) {
+                ITaskManager(TASK_MANAGER).createDecryptTask(uint256(euint64.unwrap(eActual)), user);
+                revert("decrypt not ready");
+            }
 
             actualProfit   = uint256(decProfit);
             totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(actualProfit)));
+            FHE.allow(totalLiquidity, address(this));
         }
 
         uint256 payout = actualProfit + returnedCollateral;
@@ -178,6 +216,7 @@ contract FHEVault is IVault {
 
     function receiveLoss(uint256 amount) external onlyPositionManager {
         totalLiquidity = FHE.add(totalLiquidity, FHE.asEuint64(uint64(amount)));
+        FHE.allow(totalLiquidity, address(this));
         emit ReceiveLoss(amount);
     }
 

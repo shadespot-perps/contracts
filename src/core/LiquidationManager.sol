@@ -57,4 +57,32 @@ contract LiquidationManager {
 
         emit LiquidationExecuted(trader, msg.sender, token);
     }
+
+    // -------------------------------------------------------
+    // FINALIZE LIQUIDATION (decrypt-with-proof)
+    // -------------------------------------------------------
+    function finalizeLiquidation(
+        address trader,
+        address token,
+        bool isLong,
+        bool canLiquidatePlain,
+        bytes calldata canLiquidateSignature,
+        uint256 collateralPlain,
+        bytes calldata collateralSignature,
+        uint256 sizePlain,
+        bytes calldata sizeSignature
+    ) external {
+        positionManager.finalizeLiquidation(
+            trader,
+            token,
+            isLong,
+            msg.sender,
+            canLiquidatePlain,
+            canLiquidateSignature,
+            collateralPlain,
+            collateralSignature,
+            sizePlain,
+            sizeSignature
+        );
+    }
 }

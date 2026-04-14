@@ -73,6 +73,8 @@ contract LiquidationManagerTest is Test {
 
         vm.prank(liquidator);
         lm.liquidate(trader, token, isLong);
+        vm.prank(liquidator);
+        lm.finalizeLiquidation(trader, token, isLong, true, "", collateral, "", collateral * leverage, "");
 
         // Position must be deleted
         bytes32 key = pm.getPositionKey(trader, token, isLong);
@@ -92,6 +94,8 @@ contract LiquidationManagerTest is Test {
 
         vm.prank(liquidator);
         lm.liquidate(trader, token, isLong);
+        vm.prank(liquidator);
+        lm.finalizeLiquidation(trader, token, isLong, true, "", collateral, "", collateral * leverage, "");
 
         // Reward = 5% of collateral = 50 tokens
         assertEq(collateralToken.balanceOf(liquidator), 50 * 1e18);
@@ -109,6 +113,8 @@ contract LiquidationManagerTest is Test {
 
         vm.prank(liquidator);
         lm.liquidate(trader, token, isLong);
+        vm.prank(liquidator);
+        lm.finalizeLiquidation(trader, token, isLong, true, "", collateral, "", collateral * leverage, "");
 
         // Vault receives collateral minus liquidator reward: 1000 - 50 = 950
         // Total liquidity: 100 000 + 950 = 100 950
@@ -127,7 +133,10 @@ contract LiquidationManagerTest is Test {
         oracle.setPrice(token, 1990 * 1e18);
 
         vm.prank(liquidator);
-        vm.expectRevert("not liquidatable");
         lm.liquidate(trader, token, isLong);
+
+        vm.prank(liquidator);
+        vm.expectRevert("not liquidatable");
+        lm.finalizeLiquidation(trader, token, isLong, false, "", collateral, "", collateral * leverage, "");
     }
 }

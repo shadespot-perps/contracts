@@ -125,6 +125,10 @@ contracts/
 | Pool 2 LP balance | `euint64` | Only when LP withdraws (encrypted ≥ check, one bit) |
 | Pool 2 totalLiquidity | `euint64` | Never exposed as plaintext |
 
+### CoFHE settlement pattern (important)
+
+On live CoFHE networks, decryption is asynchronous and some deployments enforce ACL checks even for FHE operations. ShadeSpot’s close and liquidation flows use a **request → off-chain decrypt-with-proof → finalize** pattern to avoid `ACLNotAllowed` and “decrypt not ready” deadlocks. See `docs/COFHE_DECRYPT_WITH_PROOF.md`.
+
 ---
 
 ## Components
@@ -369,3 +373,38 @@ forge build
 ```
 
 `via_ir = true` is required in `foundry.toml` to avoid stack-too-deep errors in `PositionManager`.
+
+## Deployment (Arbitrum Sepolia)
+
+```bash
+
+== Logs ==
+  MockUSDC deployed:    0x3b450aA23141DB0F9d2fb5eF9d1763d0FE72f655
+  MockFHEToken deployed: 0x2Efc2A6E950b711e18d387C6F9fd8091754b5eA0
+  
+=== ShadeSpot Dual-Pool deployment complete ===
+  
+--- Pool 1 (USDC / ETH) ---
+  USDC collateral:      0x3b450aA23141DB0F9d2fb5eF9d1763d0FE72f655
+  PriceOracle:          0x63403Ab53f1808f92a267D274A311d5d49803c42
+  FundingRateManager:   0x5e1C2Ee18B317326D2dD2612A7b8820F053B7080
+  Vault:                0xE4B3b5bff7CdA60c4472eA9FC59Ba512675e3BbC
+  PositionManager:      0xb13fb9aD1Bb84C5943f2885e5fBd89218BE2f378
+  OrderManager:         0x82f0f5B3dC827511986D4852074C70668Be4fbB2
+  LiquidationManager:   0x17C597cFa193b46f820D3B7576F983222694d1c0
+  Router:               0xd2AC4Ce57e5286839644e69dC68701be90e90D8f
+  
+--- Pool 2 (FHE Token / ETH) ---
+  FHE collateral:       0x2Efc2A6E950b711e18d387C6F9fd8091754b5eA0
+  PriceOracle:          0x9eFe93CD6170bE3457D75C1579F8218e22B0B28b
+  FundingRateManager:   0x942Ef207e7601f53b00626CF9D9DEEAC058B8493
+  FHEVault:             0x2e828d107cfCd552977BCca37aE48C668eE2bfB3
+  PositionManager:      0x370c5Cd69371a94785A66E1d44cc9401e04A92E1
+  OrderManager:         0xF6bDc069A2f373D28b0Fa82dC76bC5b8b1945741
+  LiquidationManager:   0x5aC7c34aF0a87B113805181959d806Eb6673829D
+  FHERouter:            0x35b9E1a2351764Efb713D48DFFE9DE1247E06f51
+  
+Index token (ETH):    0x980B62Da83eFf3D4576C647993b0c1D7faf17c73
+
+
+```

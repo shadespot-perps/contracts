@@ -114,7 +114,7 @@ contract Router {
         // update funding before closing
         fundingManager.updateFunding(token);
 
-        positionManager.closePosition(
+        positionManager.requestClosePosition(
             msg.sender,
             token,
             isLong
