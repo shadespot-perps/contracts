@@ -125,7 +125,7 @@ contract PositionManager {
 
         int256 fundingRate = fundingManager.getFundingRate(token);
 
-        vault.reserveLiquidity(sizePlain);
+        vault.reserveLiquidity(sizePlain, trader);
 
         positions[key] = Position({
             owner: trader,

@@ -5,15 +5,21 @@
  *   1. pool2:setup          — setOperator granted once
  *   2. pool2:add-liquidity  — FHEVault needs liquidity before reserveLiquidity runs
  *
- * CoFHE async pattern:
+ * CoFHE two-phase decrypt pattern:
  *   FHEVault.reserveLiquidity() calls FHE.getDecryptResultSafe() to verify
- *   totalLiquidity >= reserveAmount. On live CoFHE this is async:
- *     - First call creates a decrypt task and reverts "decrypt not ready"
- *     - CoFHE dispatcher publishes result to TaskManager
- *     - Retry succeeds
+ *   totalLiquidity >= reserveAmount.  On live CoFHE this is async:
  *
- *   This script retries automatically every RETRY_INTERVAL_MS until success
- *   or MAX_RETRIES is reached.
+ *   Phase A — submitDecryptTaskForOpen():
+ *     Computes the encrypted comparison and calls createDecryptTask() in a
+ *     transaction that SUCCEEDS (no revert).  The TaskCreated event is committed
+ *     to the chain so the CoFHE dispatcher can see and process it.
+ *
+ *   Phase B — openPosition():
+ *     FHEVault finds the pending check result via pendingLiqCheck[trader].
+ *     If the dispatcher has published the result, the call succeeds.
+ *     If not yet published, it reverts "decrypt not ready" — we retry Phase B.
+ *
+ *   This script runs Phase A once per attempt and retries Phase B until success.
  */
 
 import { ethers, Wallet, JsonRpcProvider, Contract } from "ethers";
@@ -28,6 +34,7 @@ const FHE_TOKEN_ABI = [
 ];
 
 const FHE_ROUTER_ABI = [
+  "function submitDecryptTaskForOpen(address token, uint256 collateral, uint256 leverage) external",
   "function openPosition(address token, uint256 collateral, uint256 leverage, bool isLong) external",
   "event OpenPosition(address indexed trader, address token, uint256 collateral, uint256 leverage, bool isLong)",
 ];
@@ -39,8 +46,9 @@ const LEVERAGE          = 5n;
 const IS_LONG           = true;
 const ETH_PRICE_8DEC    = 320_000_000_000n;
 
-const MAX_RETRIES       = 20;
-const RETRY_INTERVAL_MS = 15_000; // 15s — give CoFHE dispatcher time to publish
+const MAX_RETRIES            = 20;
+const SUBMIT_WAIT_MS         = 20_000; // 20s — give dispatcher time after Phase A
+const RETRY_INTERVAL_MS      = 15_000; // 15s — between Phase B retries
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -73,13 +81,29 @@ async function main() {
   console.log("  isLong    :", IS_LONG);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`\n[Attempt ${attempt}/${MAX_RETRIES}] Refreshing oracle...`);
+    console.log(`\n[Attempt ${attempt}/${MAX_RETRIES}]`);
+
+    // ── Phase A: refresh oracle + submit decrypt task ─────────────────────────
+    // This transaction SUCCEEDS, so the TaskCreated event is committed and the
+    // CoFHE dispatcher can process the encrypted comparison.
+    console.log("  Refreshing oracle...");
     const oTx = await oracle.setPrice(INDEX_TOKEN, ETH_PRICE_8DEC);
     await oTx.wait();
     console.log("  oracle tx:", oTx.hash);
 
+    console.log("  Submitting decrypt task (Phase A)...");
+    const submitTx = await fheRouter.submitDecryptTaskForOpen(
+      INDEX_TOKEN, COLLATERAL_AMOUNT, LEVERAGE,
+    );
+    await submitTx.wait();
+    console.log("  submit tx:", submitTx.hash);
+    console.log(`  Waiting ${SUBMIT_WAIT_MS / 1000}s for CoFHE dispatcher to publish result...`);
+    await new Promise(r => setTimeout(r, SUBMIT_WAIT_MS));
+
+    // ── Phase B: open position ────────────────────────────────────────────────
+    // FHEVault finds pendingLiqCheck[trader] and reads the dispatcher result.
     try {
-      console.log("  Sending openPosition...");
+      console.log("  Sending openPosition (Phase B)...");
       const openTx = await fheRouter.openPosition(
         INDEX_TOKEN, COLLATERAL_AMOUNT, LEVERAGE, IS_LONG,
       );
@@ -105,8 +129,10 @@ async function main() {
 
     } catch (err: any) {
       if (isDecryptNotReady(err)) {
-        console.log(`  "decrypt not ready" — decrypt task submitted to CoFHE dispatcher.`);
-        console.log(`  Waiting ${RETRY_INTERVAL_MS / 1000}s for result...`);
+        // Dispatcher hasn't published the result yet — pendingLiqCheck stays set,
+        // so the next attempt's Phase B will retry with the same handle.
+        console.log(`  "decrypt not ready" — dispatcher hasn't published yet.`);
+        console.log(`  Waiting ${RETRY_INTERVAL_MS / 1000}s before next attempt...`);
         await new Promise(r => setTimeout(r, RETRY_INTERVAL_MS));
       } else {
         throw err; // real error — surface immediately

@@ -1,141 +1,150 @@
 /**
  * decrypt-read.ts
  *
- * Reads decryption results from the CoFHE TaskManager.
+ * Reads decryption results from the CoFHE TaskManager for a pending close.
  *
- * On live CoFHE (Arbitrum Sepolia), when closePosition emits a PositionClosed
- * event containing a `settlementHandle` (bytes32 ctHash), the CoFHE dispatcher
- * asynchronously calls TaskManager.publishDecryptResult(ctHash, result, sig).
- *
- * This script:
- *   1. Polls TaskManager.getDecryptResultSafe(ctHash) until ready
- *   2. Optionally verifies the signature against the dispatcher's signing key
+ * Flow:
+ *   1. Derives the eFinalAmount ctHash from PositionManager.pendingFinalAmount
+ *   2. Calls TaskManager.createDecryptTask() to explicitly kick the dispatcher
+ *      (mirrors the two-phase pattern used in pool2-open — committed tx = event
+ *       the dispatcher can see)
+ *   3. Polls TaskManager.getDecryptResultSafe() until the dispatcher publishes
+ *   4. Once available, prints the plaintext settlement amount and the
+ *      arguments needed to call finalizeClosePosition
  */
 
-import { Wallet, JsonRpcProvider, Contract, ethers } from "ethers";
-import { RPC_URL, PRIVATE_KEY, TASK_MANAGER, ENC_TYPE } from "./config";
-import { computeDecryptResultHash } from "./encrypt";
+import { Wallet, JsonRpcProvider, Contract } from "ethers";
+import { RPC_URL, PRIVATE_KEY, TASK_MANAGER } from "./config";
 
 const TASK_MANAGER_ABI = [
-  // Returns (result, exists) — exists=false if not yet decrypted
-  "function getDecryptResultSafe(bytes32 ctHash) external view returns (uint256 result, bool exists)",
-
-  // Verify without storing — returns true if signature is valid
-  "function verifyDecryptResult(bytes32 ctHash, uint256 result, bytes calldata signature) external view returns (bool)",
-
-  // Dispatcher signer address
+  "function getDecryptResultSafe(uint256 ctHash) external view returns (uint256 result, bool exists)",
+  "function createDecryptTask(uint256 ctHash, address requestor) external",
+  "function verifyDecryptResult(uint256 ctHash, uint256 result, bytes calldata signature) external view returns (bool)",
   "function decryptResultSigner() external view returns (address)",
-
-  // Events
-  "event DecryptionResult(bytes32 indexed ctHash, uint256 result)",
+  "event DecryptionResult(uint256 ctHash, uint256 result, address indexed requestor)",
 ];
 
-/**
- * Poll until the CoFHE dispatcher has published the decrypt result.
- * Returns the plaintext result.
- */
-async function waitForDecrypt(
+const POSITION_MANAGER_ABI = [
+  "function getPositionKey(address trader, address token, bool isLong) public pure returns (bytes32)",
+  "function pendingFinalAmount(bytes32 positionKey) external view returns (bytes32)",
+  "function positions(bytes32 key) external view returns (address owner, address indexToken, bytes32 size, bytes32 collateral, bytes32 entryPrice, int256 entryFundingRate, bytes32 isLong, bool exists)",
+];
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const IS_LONG           = true;
+const POLL_INTERVAL_MS  = 5_000;   // 5 s between polls
+const POLL_MAX_MS       = 300_000; // 5 min total
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function pollForResult(
   taskManager: Contract,
   ctHash: bigint,
-  pollIntervalMs = 3000,
-  maxWaitMs      = 120_000
 ): Promise<bigint> {
-  const ctHashHex = ethers.zeroPadValue(ethers.toBeHex(ctHash), 32);
-  const start     = Date.now();
+  const start = Date.now();
+  let dots = 0;
 
-  console.log("Polling for decrypt result of ctHash:", ctHashHex);
-
-  while (Date.now() - start < maxWaitMs) {
+  while (Date.now() - start < POLL_MAX_MS) {
     const [result, exists]: [bigint, boolean] =
-      await taskManager.getDecryptResultSafe(ctHashHex);
+      await taskManager.getDecryptResultSafe(ctHash);
 
     if (exists) {
-      console.log("Decrypted result:", result.toString());
+      process.stdout.write("\n");
       return result;
     }
 
+    if (dots % 12 === 0 && dots > 0) {
+      // print elapsed every ~60 s
+      process.stdout.write(` ${Math.round((Date.now() - start) / 1000)}s`);
+    }
     process.stdout.write(".");
-    await new Promise(r => setTimeout(r, pollIntervalMs));
+    dots++;
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
 
-  throw new Error("Timed out waiting for CoFHE decrypt result");
+  throw new Error(`Timed out after ${POLL_MAX_MS / 1000}s — dispatcher may not be active.`);
 }
 
-/**
- * Listen for DecryptionResult events from TaskManager in real-time.
- * Resolves once the matching ctHash appears.
- */
-async function listenForDecrypt(
-  taskManager: Contract,
-  ctHash: bigint,
-  timeoutMs = 120_000
-): Promise<bigint> {
-  const ctHashHex = ethers.zeroPadValue(ethers.toBeHex(ctHash), 32);
-  console.log("Listening for DecryptionResult event for ctHash:", ctHashHex);
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      taskManager.off("DecryptionResult");
-      reject(new Error("Timed out waiting for DecryptionResult event"));
-    }, timeoutMs);
-
-    taskManager.on("DecryptionResult", (emittedCtHash: string, result: bigint) => {
-      if (emittedCtHash.toLowerCase() === ctHashHex.toLowerCase()) {
-        clearTimeout(timer);
-        taskManager.off("DecryptionResult");
-        console.log("\nDecryptionResult event received:");
-        console.log("  ctHash:", emittedCtHash);
-        console.log("  result:", result.toString());
-        resolve(result);
-      }
-    });
-  });
-}
-
-// ── Demo — read a specific ctHash from a past close tx ───────────────────────
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   const provider    = new JsonRpcProvider(RPC_URL);
   const wallet      = new Wallet(PRIVATE_KEY, provider);
   const taskManager = new Contract(TASK_MANAGER, TASK_MANAGER_ABI, wallet);
 
-  // Replace with the settlementHandle bytes32 from a PositionClosed event
-  // (emitted by PositionManager during closePosition)
-  const SETTLEMENT_CT_HASH_HEX =
-    "0xf6b4ad9088010621fa026fc62508534ea24cde9f143584667697a71c8eae0600";
+  const { POOL2 } = await import("./config");
 
-  console.log("TaskManager:", TASK_MANAGER);
+  console.log("TaskManager:      ", TASK_MANAGER);
   console.log("Dispatcher signer:", await taskManager.decryptResultSigner());
 
-  const ctHashBig = BigInt(SETTLEMENT_CT_HASH_HEX);
+  // ── 1. Derive ctHash from pendingFinalAmount ─────────────────────────────
 
-  // Try to read immediately (may already be available for the tx we ran above)
-  const [result, exists]: [bigint, boolean] =
-    await taskManager.getDecryptResultSafe(SETTLEMENT_CT_HASH_HEX);
+  const pm  = new Contract(POOL2.POSITION_MANAGER, POSITION_MANAGER_ABI, wallet);
+  const key = await pm.getPositionKey(
+    wallet.address,
+    process.env.INDEX_TOKEN!,
+    IS_LONG,
+  );
 
-  if (exists) {
-    console.log("\nDecrypt result already available:");
-    console.log("  net settlement (raw):", result.toString());
-    console.log("  in USDC (6 dec):     ", (Number(result) / 1e6).toFixed(6));
-  } else {
-    console.log("\nNot yet decrypted. Starting live listener...");
-    // Uncomment to wait for async decryption:
-    // const liveResult = await listenForDecrypt(taskManager, ctHashBig);
-    // console.log("Settlement:", liveResult.toString());
-
-    // Or poll:
-    // const polledResult = await waitForDecrypt(taskManager, ctHashBig);
-    // console.log("Settlement:", polledResult.toString());
-    console.log("(use waitForDecrypt() or listenForDecrypt() to await it)");
+  const handle: string = await pm.pendingFinalAmount(key);
+  if (BigInt(handle) === 0n) {
+    console.log("\nNo pending close for this position.");
+    console.log("Run `npm run pool2:close` first, then re-run `npm run decrypt:read`.");
+    process.exit(0);
   }
 
-  // ── Verify signature integrity ─────────────────────────────────────────────
-  // If you have the dispatcher's signature bytes you can verify without re-calling:
-  //
-  // const chainId  = (await provider.getNetwork()).chainId;
-  // const msgHash  = computeDecryptResultHash(result, ENC_TYPE.EUINT128, chainId, ctHashBig);
-  // const recovered = ethers.recoverAddress(msgHash, signatureBytes);
-  // console.log("Recovered signer:", recovered);
+  const ctHash = BigInt(handle);
+  console.log("\nctHash (eFinalAmount):", handle);
+
+  // ── 2. Check if already decrypted ────────────────────────────────────────
+
+  {
+    const [result, exists]: [bigint, boolean] =
+      await taskManager.getDecryptResultSafe(ctHash);
+
+    if (exists) {
+      printResult(result, handle, POOL2);
+      return;
+    }
+  }
+
+  // ── 3. Kick the dispatcher with an explicit createDecryptTask tx ──────────
+  // Same pattern as pool2:open — a committed tx means a TaskCreated event that
+  // the CoFHE dispatcher can observe and act on, unlike the reverted txs from
+  // the old inline getDecryptResultSafe loop.
+
+  console.log("\nNot yet decrypted. Submitting explicit decrypt task to dispatcher...");
+  try {
+    const kickTx = await taskManager.createDecryptTask(ctHash, wallet.address);
+    await kickTx.wait();
+    console.log("createDecryptTask tx:", kickTx.hash);
+  } catch (e: any) {
+    // ACL may reject if the handle isn't allowed for this caller.
+    // requestClosePosition calls FHE.allowPublic which sets the global allow flag;
+    // if the ACL's isAllowed checks that flag the tx will succeed.
+    console.warn("createDecryptTask failed (ACL may not allow public access):", e.shortMessage ?? e.message);
+    console.log("Proceeding to poll anyway — dispatcher may still pick it up.");
+  }
+
+  // ── 4. Poll until result is published ────────────────────────────────────
+
+  console.log(`\nPolling every ${POLL_INTERVAL_MS / 1000}s (max ${POLL_MAX_MS / 1000}s)...`);
+  const result = await pollForResult(taskManager, ctHash);
+
+  printResult(result, handle, POOL2);
+}
+
+function printResult(result: bigint, handle: string, _POOL2: unknown) {
+  console.log("\n=== Decrypt result available ===");
+  console.log("  eFinalAmount (raw):", result.toString());
+  console.log("  in token units:   ", (Number(result) / 1e6).toFixed(6));
+  console.log("\nTo finalize the close, call FHERouter (or PositionManager directly):");
+  console.log("  finalizeClosePosition(trader, token, isLong, finalAmount, finalAmountSig, sizePlain, sizeSig)");
+  console.log("  trader:      ", "your wallet address");
+  console.log("  finalAmount: ", result.toString());
+  console.log("  ctHash:      ", handle);
+  console.log("\n(The dispatcher's signature for these values is in the DecryptionResult event)");
 }
 
 main().catch(console.error);

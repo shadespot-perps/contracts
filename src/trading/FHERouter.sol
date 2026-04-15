@@ -79,6 +79,27 @@ contract FHERouter {
     // -------------------------------------------------
 
     /**
+     * @notice Phase 1 — submit the encrypted liquidity-check decrypt task so
+     *         the CoFHE dispatcher can process it in a committed transaction.
+     *
+     *         Call this once before openPosition and wait for the dispatcher to
+     *         publish the result (~15–30 s on live CoFHE networks).  openPosition
+     *         will then find the pending result and succeed without reverting.
+     *
+     * @param token      Index token (must equal indexToken).
+     * @param collateral Collateral amount (same value used in openPosition).
+     * @param leverage   Leverage multiplier (same value used in openPosition).
+     */
+    function submitDecryptTaskForOpen(
+        address token,
+        uint256 collateral,
+        uint256 leverage
+    ) external {
+        require(token == indexToken, "unsupported index token");
+        vault.submitReserveLiquidityCheck(msg.sender, collateral * leverage);
+    }
+
+    /**
      * @notice Open a leveraged position using FHE token as collateral.
      * @dev Caller must have granted this router operator status on the FHE token:
      *      fheToken.setOperator(address(fheRouter), untilTimestamp)

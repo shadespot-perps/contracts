@@ -87,7 +87,7 @@ contract VaultTest is Test {
         
         // Reserve 800
         vm.prank(positionManager);
-        vault.reserveLiquidity(800 * 1e18);
+        vault.reserveLiquidity(800 * 1e18, address(this));
         
         // Attempt to withdraw 400, but only 200 available
         vm.prank(router);
@@ -104,7 +104,7 @@ contract VaultTest is Test {
         
         uint256 reserveAmount = 500 * 1e18;
         vm.prank(positionManager);
-        vault.reserveLiquidity(reserveAmount);
+        vault.reserveLiquidity(reserveAmount, address(this));
         
         assertEq(vault.totalReserved(), reserveAmount);
         assertEq(vault.availableLiquidity(), depositAmount - reserveAmount);
@@ -114,7 +114,7 @@ contract VaultTest is Test {
         uint256 reserveAmount = 500 * 1e18;
         vm.prank(positionManager);
         vm.expectRevert("Insufficient vault liquidity");
-        vault.reserveLiquidity(reserveAmount);
+        vault.reserveLiquidity(reserveAmount, address(this));
     }
 
     function test_ReleaseLiquidity() public {
@@ -124,7 +124,7 @@ contract VaultTest is Test {
         
         uint256 reserveAmount = 500 * 1e18;
         vm.prank(positionManager);
-        vault.reserveLiquidity(reserveAmount);
+        vault.reserveLiquidity(reserveAmount, address(this));
         
         vm.prank(positionManager);
         vault.releaseLiquidity(300 * 1e18);

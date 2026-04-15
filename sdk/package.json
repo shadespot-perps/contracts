@@ -7,6 +7,7 @@
     "encrypt":       "ts-node src/encrypt.ts",
     "open":          "ts-node src/open-position.ts",
     "close":         "ts-node src/close-position.ts",
+    "pool2:redeploy":      "ts-node src/pool2-redeploy.ts",
     "pool2:setup":         "ts-node src/pool2-setup.ts",
     "pool2:add-liquidity": "ts-node src/pool2-add-liquidity.ts",
     "pool2:open":          "ts-node src/pool2-open.ts",

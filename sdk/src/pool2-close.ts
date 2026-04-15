@@ -17,6 +17,7 @@ const FHE_ROUTER_ABI = [
 const IS_LONG        = true;
 const ETH_PRICE_8DEC = 320_000_000_000n;
 
+
 async function main() {
   const provider  = new JsonRpcProvider(RPC_URL);
   const wallet    = new Wallet(PRIVATE_KEY, provider);

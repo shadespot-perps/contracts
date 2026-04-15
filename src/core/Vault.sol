@@ -88,7 +88,7 @@ function setRouter(address _router) external onlyOwner {
     // POSITION MANAGER FUNCTIONS
     // ------------------------------------------------
 
-    function reserveLiquidity(uint256 amount)
+    function reserveLiquidity(uint256 amount, address /* trader */)
         external
         onlyPositionManager
     {

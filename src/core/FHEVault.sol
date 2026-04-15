@@ -42,6 +42,10 @@ contract FHEVault is IVault {
     euint64 public totalReserved;
     mapping(address => euint64) public lpBalance;
 
+    // Two-phase decrypt: trader → pending hasLiq ebool submitted in a prior
+    // successful tx so the CoFHE dispatcher can see and process the TaskCreated event.
+    mapping(address => ebool) public pendingLiqCheck;
+
     event Deposit(address indexed user, uint256 amount);
     event Withdraw(address indexed user, uint256 amount);
     event IncreaseReserved(uint256 amount);
@@ -147,15 +151,49 @@ contract FHEVault is IVault {
     // POSITION MANAGER FUNCTIONS (IVault)
     // --------------------------------------------------------
 
-    function reserveLiquidity(uint256 amount) external onlyPositionManager {
+    /**
+     * @notice Phase 1 of the two-phase open: compute the encrypted liquidity
+     *         comparison and register a decrypt task that will be committed
+     *         on-chain so the CoFHE dispatcher can pick it up.
+     *
+     *         Call this from the router BEFORE calling openPosition.  The tx
+     *         succeeds (no revert), so the TaskCreated event lands in the chain
+     *         and the dispatcher processes it.  After the dispatcher publishes
+     *         the result, reserveLiquidity will find it immediately.
+     *
+     * @param trader  The trader whose pending check to store.
+     * @param amount  The reserve amount (same value passed to reserveLiquidity).
+     */
+    function submitReserveLiquidityCheck(address trader, uint256 amount) external onlyRouter {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         euint64 eAvail  = FHE.sub(totalLiquidity, totalReserved);
+        ebool hasLiq    = FHE.gte(eAvail, eAmount);
+        // Persistent allow so reserveLiquidity (and the dispatcher) can use this handle.
+        FHE.allow(hasLiq, address(this));
+        pendingLiqCheck[trader] = hasLiq;
+        // createDecryptTask succeeds here — this tx doesn't revert.
+        ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), address(this));
+    }
 
-        ebool hasLiq = FHE.gte(eAvail, eAmount);
-        FHE.allowTransient(hasLiq, address(this));
+    function reserveLiquidity(uint256 amount, address trader) external onlyPositionManager {
+        euint64 eAmount = FHE.asEuint64(uint64(amount));
+        ebool hasLiq;
+
+        ebool pending = pendingLiqCheck[trader];
+        if (ebool.unwrap(pending) != bytes32(0)) {
+            // Use the pre-submitted handle (result already requested from dispatcher).
+            hasLiq = pending;
+            pendingLiqCheck[trader] = ebool.wrap(bytes32(0));
+        } else {
+            // Fallback: submit inline (reverts — kept for backward compatibility).
+            euint64 eAvail = FHE.sub(totalLiquidity, totalReserved);
+            hasLiq = FHE.gte(eAvail, eAmount);
+            FHE.allowTransient(hasLiq, address(this));
+        }
+
         (bool ok, bool decOk) = FHE.getDecryptResultSafe(hasLiq);
         if (!decOk) {
-            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), msg.sender);
+            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), address(this));
             revert("decrypt not ready");
         }
         require(ok, "Insufficient vault liquidity");
