@@ -1,0 +1,27 @@
+{
+  "name": "shadespot-cofhe-sdk",
+  "version": "1.0.0",
+  "description": "CoFHE SDK scripts for ShadeSpot on Arbitrum Sepolia",
+  "scripts": {
+    "keygen":        "ts-node src/keygen-encrypt.ts",
+    "encrypt":       "ts-node src/encrypt.ts",
+    "open":          "ts-node src/open-position.ts",
+    "close":         "ts-node src/close-position.ts",
+    "pool2:redeploy":      "ts-node src/pool2-redeploy.ts",
+    "pool2:setup":         "ts-node src/pool2-setup.ts",
+    "pool2:add-liquidity": "ts-node src/pool2-add-liquidity.ts",
+    "pool2:open":          "ts-node src/pool2-open.ts",
+    "pool2:close":   "ts-node src/pool2-close.ts",
+    "decrypt:read":  "ts-node src/decrypt-read.ts"
+  },
+  "dependencies": {
+    "fhenixjs": "0.2.1",
+    "dotenv": "^16.0.0",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  }
+}

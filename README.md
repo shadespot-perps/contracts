@@ -383,6 +383,7 @@ forge build
   MockFHEToken deployed: 0x2Efc2A6E950b711e18d387C6F9fd8091754b5eA0
   
 === ShadeSpot Dual-Pool deployment complete ===
+
   
 --- Pool 1 (USDC / ETH) ---
   USDC collateral:      0x3b450aA23141DB0F9d2fb5eF9d1763d0FE72f655

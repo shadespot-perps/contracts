@@ -254,7 +254,7 @@ contract FHEPoolTest is Test {
 
     function test_FHEVault_ReserveLiquidity_EncryptedReservedUpdated() public {
         vm.prank(address(pm));
-        vault.reserveLiquidity(SIZE);
+        vault.reserveLiquidity(SIZE, address(this));
 
         (uint64 reserved, bool ok) = FHE.getDecryptResultSafe(vault.totalReserved());
         assertTrue(ok);
@@ -264,12 +264,12 @@ contract FHEPoolTest is Test {
     function test_FHEVault_ReserveLiquidity_Insufficient_Reverts() public {
         vm.prank(address(pm));
         vm.expectRevert("Insufficient vault liquidity");
-        vault.reserveLiquidity(LP_SEED + 1);
+        vault.reserveLiquidity(LP_SEED + 1, address(this));
     }
 
     function test_FHEVault_ReleaseLiquidity_EncryptedReservedDecreases() public {
         vm.prank(address(pm));
-        vault.reserveLiquidity(SIZE);
+        vault.reserveLiquidity(SIZE, address(this));
 
         vm.prank(address(pm));
         vault.releaseLiquidity(SIZE);
