@@ -6,7 +6,7 @@ import "../core/FHEVault.sol";
 import "../core/FundingRateManager.sol";
 import "./OrderManager.sol";
 import "../tokens/IEncryptedERC20.sol";
-import { FHE, euint64 } from "cofhe-contracts/FHE.sol";
+import {FHE, euint64} from "cofhe-contracts/FHE.sol";
 
 /**
  * @title FHERouter
@@ -22,10 +22,9 @@ import { FHE, euint64 } from "cofhe-contracts/FHE.sol";
  *   - indexToken is enforced — only ETH positions are accepted.
  */
 contract FHERouter {
-
-    PositionManager    public positionManager;
-    FHEVault           public vault;
-    OrderManager       public orderManager;
+    PositionManager public positionManager;
+    FHEVault public vault;
+    OrderManager public orderManager;
     FundingRateManager public fundingManager;
 
     IEncryptedERC20 public collateralToken;
@@ -41,16 +40,9 @@ contract FHERouter {
         bool isLong
     );
 
-    event ClosePosition(
-        address indexed trader,
-        address token,
-        bool isLong
-    );
+    event ClosePosition(address indexed trader, address token, bool isLong);
 
-    event OrderCreated(
-        address indexed trader,
-        address         token
-    );
+    event OrderCreated(address indexed trader, address token);
 
     event OrderExecuted(uint256 orderId);
 
@@ -67,11 +59,11 @@ contract FHERouter {
     ) {
         require(_indexToken != address(0), "invalid index token");
         positionManager = PositionManager(_positionManager);
-        vault           = FHEVault(_vault);
-        orderManager    = OrderManager(_orderManager);
-        fundingManager  = FundingRateManager(_fundingManager);
+        vault = FHEVault(_vault);
+        orderManager = OrderManager(_orderManager);
+        fundingManager = FundingRateManager(_fundingManager);
         collateralToken = IEncryptedERC20(_collateralToken);
-        indexToken      = _indexToken;
+        indexToken = _indexToken;
     }
 
     // -------------------------------------------------
@@ -97,9 +89,19 @@ contract FHERouter {
         // Confidential transfer: router (operator) moves collateral from trader → vault
         euint64 eCollateral = FHE.asEuint64(uint64(collateral));
         FHE.allow(eCollateral, address(collateralToken));
-        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
+        collateralToken.confidentialTransferFrom(
+            msg.sender,
+            address(vault),
+            eCollateral
+        );
 
-        positionManager.openPosition(msg.sender, token, collateral, leverage, isLong);
+        positionManager.openPosition(
+            msg.sender,
+            token,
+            collateral,
+            leverage,
+            isLong
+        );
 
         emit OpenPosition(msg.sender, token, collateral, leverage, isLong);
     }
@@ -134,9 +136,20 @@ contract FHERouter {
 
         euint64 eCollateral = FHE.asEuint64(uint64(collateral));
         FHE.allow(eCollateral, address(collateralToken));
-        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
+        collateralToken.confidentialTransferFrom(
+            msg.sender,
+            address(vault),
+            eCollateral
+        );
 
-        orderManager.createOrder(msg.sender, token, collateral, leverage, triggerPrice, isLong);
+        orderManager.createOrder(
+            msg.sender,
+            token,
+            collateral,
+            leverage,
+            triggerPrice,
+            isLong
+        );
 
         emit OrderCreated(msg.sender, token);
     }
@@ -146,7 +159,8 @@ contract FHERouter {
     // -------------------------------------------------
 
     function cancelOrder(uint256 orderId) external {
-        (address trader, , uint256 collateral, , , ) = orderManager.getOrderMeta(orderId);
+        (address trader, , uint256 collateral, , , ) = orderManager
+            .getOrderMeta(orderId);
         orderManager.cancelOrder(orderId, msg.sender);
         vault.refundCollateral(trader, collateral);
     }
@@ -165,7 +179,13 @@ contract FHERouter {
         ) = orderManager.executeOrder(orderId);
 
         fundingManager.updateFunding(token);
-        positionManager.openPosition(trader, token, collateral, leverage, isLong);
+        positionManager.openPosition(
+            trader,
+            token,
+            collateral,
+            leverage,
+            isLong
+        );
 
         emit OrderExecuted(orderId);
     }
@@ -181,7 +201,11 @@ contract FHERouter {
     function addLiquidity(uint256 amount) external {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         FHE.allow(eAmount, address(collateralToken));
-        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eAmount);
+        collateralToken.confidentialTransferFrom(
+            msg.sender,
+            address(vault),
+            eAmount
+        );
         vault.deposit(amount);
         emit AddLiquidity(msg.sender, amount);
     }

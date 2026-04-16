@@ -2,7 +2,7 @@
 pragma solidity ^0.8.25;
 
 import "forge-std/Test.sol";
-import { FHE, euint64 } from "cofhe-contracts/FHE.sol";
+import {FHE, euint64} from "cofhe-contracts/FHE.sol";
 
 import "../../src/core/FHEVault.sol";
 import "../../src/core/PositionManager.sol";
@@ -37,39 +37,38 @@ import "../mocks/MockTaskManager.sol";
  *   any confidentialTransferFrom. Tests set until = type(uint48).max.
  */
 contract FHEPoolTest is Test {
-
     address constant TASK_MANAGER = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
 
     // ── contracts ─────────────────────────────────────────────────────────
-    MockFHEToken       fheToken;
-    FHEVault           vault;
-    PositionManager    pm;
+    MockFHEToken fheToken;
+    FHEVault vault;
+    PositionManager pm;
     LiquidationManager lm;
     FundingRateManager frm;
-    OrderManager       om;
-    FHERouter          router;
-    PriceOracle        oracle;
+    OrderManager om;
+    FHERouter router;
+    PriceOracle oracle;
 
     // ── test accounts ─────────────────────────────────────────────────────
-    address owner      = address(this);
-    address lp         = address(0x10);
-    address trader     = address(0x20);
+    address owner = address(this);
+    address lp = address(0x10);
+    address trader = address(0x20);
     address liquidator = address(0x30);
 
     // ── ETH index token (price feed only — no real transfers) ─────────────
     address ethToken;
 
     // ── amount constants (6-decimal FHE token) ────────────────────────────
-    uint64  constant LP_SEED     = 100_000e6;  // LP initial deposit
-    uint64  constant COLLATERAL  = 1_000e6;    // trader collateral per test
-    uint64  constant LEVERAGE    = 5;
-    uint64  constant SIZE        = COLLATERAL * LEVERAGE;  // 5_000e6
-    uint64  constant PNL         = 500e6;      // expected PnL for 10 % move
+    uint64 constant LP_SEED = 100_000e6; // LP initial deposit
+    uint64 constant COLLATERAL = 1_000e6; // trader collateral per test
+    uint64 constant LEVERAGE = 5;
+    uint64 constant SIZE = COLLATERAL * LEVERAGE; // 5_000e6
+    uint64 constant PNL = 500e6; // expected PnL for 10 % move
 
     // Oracle prices keep 1e18 precision — too large for uint64, use uint256
     uint256 constant PRICE_ENTRY = 2_000e18;
-    uint256 constant PRICE_UP    = 2_200e18;   // +10 %
-    uint256 constant PRICE_DOWN  = 1_800e18;   // -10 %
+    uint256 constant PRICE_UP = 2_200e18; // +10 %
+    uint256 constant PRICE_DOWN = 1_800e18; // -10 %
     // PnL check: (200e18 * 5_000e6) / 2_000e18 = 500e6 ✓
 
     // ── setup ─────────────────────────────────────────────────────────────
@@ -84,11 +83,11 @@ contract FHEPoolTest is Test {
         fheToken = new MockFHEToken("Encrypted USDC", "eUSDC");
 
         oracle = new PriceOracle();
-        frm    = new FundingRateManager();
-        vault  = new FHEVault(address(fheToken), owner);
-        pm     = new PositionManager(address(vault), address(oracle), address(frm));
-        lm     = new LiquidationManager(address(pm), address(frm));
-        om     = new OrderManager(address(oracle), address(frm), owner);
+        frm = new FundingRateManager();
+        vault = new FHEVault(address(fheToken), owner);
+        pm = new PositionManager(address(vault), address(oracle), address(frm));
+        lm = new LiquidationManager(address(pm), address(frm));
+        om = new OrderManager(address(oracle), address(frm), owner);
         router = new FHERouter(
             address(pm),
             address(vault),
@@ -153,7 +152,7 @@ contract FHEPoolTest is Test {
     }
 
     function test_FHEToken_SetOperator_IsOperator_True() public {
-        address user    = address(0x50);
+        address user = address(0x50);
         address spender = address(0x51);
 
         assertFalse(fheToken.isOperator(user, spender));
@@ -164,7 +163,9 @@ contract FHEPoolTest is Test {
         assertTrue(fheToken.isOperator(user, spender));
     }
 
-    function test_FHEToken_ConfidentialTransferFrom_NoOperator_Reverts() public {
+    function test_FHEToken_ConfidentialTransferFrom_NoOperator_Reverts()
+        public
+    {
         address user = address(0x60);
         fheToken.mint(user, uint64(200e6));
 
@@ -175,7 +176,9 @@ contract FHEPoolTest is Test {
         fheToken.confidentialTransferFrom(user, address(vault), eAmt);
     }
 
-    function test_FHEToken_ConfidentialTransferFrom_WithOperator_Works() public {
+    function test_FHEToken_ConfidentialTransferFrom_WithOperator_Works()
+        public
+    {
         address user = address(0x61);
         fheToken.mint(user, uint64(200e6));
 
@@ -188,7 +191,9 @@ contract FHEPoolTest is Test {
         vm.prank(address(router));
         fheToken.confidentialTransferFrom(user, address(vault), eAmt);
 
-        (uint64 userBal, ) = FHE.getDecryptResultSafe(fheToken.confidentialBalanceOf(user));
+        (uint64 userBal, ) = FHE.getDecryptResultSafe(
+            fheToken.confidentialBalanceOf(user)
+        );
         assertEq(userBal, uint64(100e6));
     }
 
@@ -196,16 +201,16 @@ contract FHEPoolTest is Test {
     // SECTION 2 — FHEVault (encrypted LP accounting)
     // ======================================================================
 
-    function test_FHEVault_Deposit_EncryptedLiquidityUpdated() public {
+    function test_FHEVault_Deposit_LiquidityUpdated() public {
         // setUp already added LP_SEED via router.addLiquidity → vault.deposit
-        (uint64 liq, bool ok) = FHE.getDecryptResultSafe(vault.totalLiquidity());
-        assertTrue(ok);
-        assertEq(liq, LP_SEED);
+        assertEq(vault.totalLiquidity(), LP_SEED);
     }
 
     function test_FHEVault_LPBalance_Encrypted() public {
         // lpBalance[router] should equal LP_SEED (router is msg.sender when calling deposit)
-        (uint64 bal, bool ok) = FHE.getDecryptResultSafe(vault.lpBalance(address(router)));
+        (uint64 bal, bool ok) = FHE.getDecryptResultSafe(
+            vault.lpBalance(address(router))
+        );
         assertTrue(ok);
         assertEq(bal, LP_SEED);
     }
@@ -216,8 +221,10 @@ contract FHEPoolTest is Test {
         vm.prank(lp);
         router.removeLiquidity(withdrawAmt);
 
-        (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
-        assertEq(liq, LP_SEED - withdrawAmt);
+        // Finalize the withdraw asynchronously
+        vault.finalizeWithdraw(address(router), withdrawAmt, true, "");
+
+        assertEq(vault.totalLiquidity(), LP_SEED - withdrawAmt);
     }
 
     function test_FHEVault_Withdraw_TransfersTokensToLP() public {
@@ -225,6 +232,9 @@ contract FHEPoolTest is Test {
 
         vm.prank(lp);
         router.removeLiquidity(withdrawAmt);
+
+        // Finalize the withdraw asynchronously
+        vault.finalizeWithdraw(address(router), withdrawAmt, true, "");
 
         // router (msg.sender in vault.withdraw) receives the tokens
         (uint64 routerBal, ) = FHE.getDecryptResultSafe(
@@ -236,7 +246,7 @@ contract FHEPoolTest is Test {
     function test_FHEVault_Withdraw_InsufficientBalance_Reverts() public {
         // Router (the only valid caller) tries to withdraw more than its lpBalance (LP_SEED)
         vm.prank(address(router));
-        vm.expectRevert("Insufficient balance");
+        vm.expectRevert("Liquidity locked by positions");
         vault.withdraw(LP_SEED + 1);
     }
 
@@ -248,17 +258,15 @@ contract FHEPoolTest is Test {
         // lpBalance[router] = LP_SEED — passes balance check
         // but LP_SEED > available → fails liquidity check
         vm.prank(address(router));
-        vm.expectRevert("Liquidity locked");
+        vm.expectRevert("Liquidity locked by positions");
         vault.withdraw(LP_SEED);
     }
 
-    function test_FHEVault_ReserveLiquidity_EncryptedReservedUpdated() public {
+    function test_FHEVault_ReserveLiquidity_ReservedUpdated() public {
         vm.prank(address(pm));
         vault.reserveLiquidity(SIZE);
 
-        (uint64 reserved, bool ok) = FHE.getDecryptResultSafe(vault.totalReserved());
-        assertTrue(ok);
-        assertEq(reserved, SIZE);
+        assertEq(vault.totalReserved(), SIZE);
     }
 
     function test_FHEVault_ReserveLiquidity_Insufficient_Reverts() public {
@@ -267,24 +275,24 @@ contract FHEPoolTest is Test {
         vault.reserveLiquidity(LP_SEED + 1);
     }
 
-    function test_FHEVault_ReleaseLiquidity_EncryptedReservedDecreases() public {
+    function test_FHEVault_ReleaseLiquidity_EncryptedReservedDecreases()
+        public
+    {
         vm.prank(address(pm));
         vault.reserveLiquidity(SIZE);
 
         vm.prank(address(pm));
         vault.releaseLiquidity(SIZE);
 
-        (uint64 reserved, ) = FHE.getDecryptResultSafe(vault.totalReserved());
-        assertEq(reserved, 0);
+        assertEq(vault.totalReserved(), 0);
     }
 
-    function test_FHEVault_ReceiveLoss_EncryptedLiquidityIncreases() public {
+    function test_FHEVault_ReceiveLoss_LiquidityIncreases() public {
         uint64 loss = uint64(200e6);
         vm.prank(address(pm));
         vault.receiveLoss(loss);
 
-        (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
-        assertEq(liq, LP_SEED + loss);
+        assertEq(vault.totalLiquidity(), LP_SEED + loss);
     }
 
     // ======================================================================
@@ -302,14 +310,14 @@ contract FHEPoolTest is Test {
         assertEq(pos.owner, trader);
 
         // pos.size / pos.collateral are euint128 in PositionManager
-        (uint128 decSize,  bool ok1) = FHE.getDecryptResultSafe(pos.size);
-        (uint128 decCol,   bool ok2) = FHE.getDecryptResultSafe(pos.collateral);
-        (bool    decLong,  bool ok3) = FHE.getDecryptResultSafe(pos.isLong);
+        (uint128 decSize, bool ok1) = FHE.getDecryptResultSafe(pos.size);
+        (uint128 decCol, bool ok2) = FHE.getDecryptResultSafe(pos.collateral);
+        (bool decLong, bool ok3) = FHE.getDecryptResultSafe(pos.isLong);
         assertTrue(ok1 && ok2 && ok3);
 
         // values fit in uint64 range for 6-decimal token
         assertEq(uint64(decSize), SIZE);
-        assertEq(uint64(decCol),  COLLATERAL);
+        assertEq(uint64(decCol), COLLATERAL);
         assertTrue(decLong);
     }
 
@@ -341,7 +349,7 @@ contract FHEPoolTest is Test {
         // newTrader has NOT set router as operator
 
         vm.prank(newTrader);
-        vm.expectRevert();  // FHERC20UnauthorizedSpender
+        vm.expectRevert(); // FHERC20UnauthorizedSpender
         router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
     }
 
@@ -360,7 +368,15 @@ contract FHEPoolTest is Test {
         vm.prank(trader);
         router.closePosition(ethToken, true);
         // Finalize with proof (MockTaskManager accepts any signature).
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(
+            trader,
+            ethToken,
+            true,
+            uint256(COLLATERAL + PNL),
+            "",
+            uint256(SIZE),
+            ""
+        );
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -370,7 +386,9 @@ contract FHEPoolTest is Test {
         assertEq(balAfter - balBefore, COLLATERAL + PNL);
     }
 
-    function test_FHERouter_ClosePosition_Profit_VaultTokenBalanceDecreases() public {
+    function test_FHERouter_ClosePosition_Profit_VaultTokenBalanceDecreases()
+        public
+    {
         vm.prank(trader);
         router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
 
@@ -379,7 +397,15 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(
+            trader,
+            ethToken,
+            true,
+            uint256(COLLATERAL + PNL),
+            "",
+            uint256(SIZE),
+            ""
+        );
 
         // Vault paid out COLLATERAL + PNL to trader.
         // Remaining vault balance = LP_SEED + COLLATERAL - (COLLATERAL + PNL) = LP_SEED - PNL
@@ -389,7 +415,9 @@ contract FHEPoolTest is Test {
         assertEq(vaultBal, LP_SEED - PNL);
     }
 
-    function test_FHERouter_ClosePosition_Loss_TraderReceivesReducedPayout() public {
+    function test_FHERouter_ClosePosition_Loss_TraderReceivesReducedPayout()
+        public
+    {
         // Open long at 2000
         vm.prank(trader);
         router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
@@ -403,7 +431,15 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(
+            trader,
+            ethToken,
+            true,
+            uint256(COLLATERAL - PNL),
+            "",
+            uint256(SIZE),
+            ""
+        );
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -413,7 +449,9 @@ contract FHEPoolTest is Test {
         assertEq(balAfter - balBefore, COLLATERAL - PNL);
     }
 
-    function test_FHERouter_ClosePosition_Loss_VaultTokenBalanceIncreases() public {
+    function test_FHERouter_ClosePosition_Loss_VaultTokenBalanceIncreases()
+        public
+    {
         vm.prank(trader);
         router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
 
@@ -421,7 +459,15 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(
+            trader,
+            ethToken,
+            true,
+            uint256(COLLATERAL - PNL),
+            "",
+            uint256(SIZE),
+            ""
+        );
 
         // Vault received COLLATERAL on open, paid out (COLLATERAL - PNL) on close.
         // Net gain = PNL. Vault token balance = LP_SEED + PNL.
@@ -439,7 +485,15 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(
+            trader,
+            ethToken,
+            true,
+            uint256(COLLATERAL + PNL),
+            "",
+            uint256(SIZE),
+            ""
+        );
 
         bytes32 key = pm.getPositionKey(trader, ethToken, true);
         assertFalse(pm.getPosition(key).exists);
@@ -453,8 +507,7 @@ contract FHEPoolTest is Test {
         vm.prank(lp);
         router.addLiquidity(extra);
 
-        (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
-        assertEq(liq, LP_SEED + extra);
+        assertEq(vault.totalLiquidity(), LP_SEED + extra);
     }
 
     function test_FHERouter_RemoveLiquidity_Works() public {
@@ -463,8 +516,10 @@ contract FHEPoolTest is Test {
         vm.prank(lp);
         router.removeLiquidity(withdrawAmt);
 
-        (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
-        assertEq(liq, LP_SEED - withdrawAmt);
+        // Finalize the withdraw asynchronously
+        vault.finalizeWithdraw(address(router), withdrawAmt, true, "");
+
+        assertEq(vault.totalLiquidity(), LP_SEED - withdrawAmt);
     }
 
     // ======================================================================
@@ -496,7 +551,7 @@ contract FHEPoolTest is Test {
         );
 
         // 5 % of COLLATERAL = 50e6
-        uint64 expectedReward = uint64(COLLATERAL) * 5 / 100;
+        uint64 expectedReward = (uint64(COLLATERAL) * 5) / 100;
 
         (uint64 liqBal, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(liquidator)
@@ -557,19 +612,7 @@ contract FHEPoolTest is Test {
     // SECTION 5 — Privacy sanity checks
     // ======================================================================
 
-    function test_FHEVault_TotalLiquidity_IsEncrypted_NotPlaintext() public {
-        // The vault does NOT expose a plaintext totalLiquidity()
-        // (unlike Vault which has uint256 public totalLiquidity)
-        // Verify the returned type is euint64 (bytes32 handle, never a raw uint256 slot)
-        euint64 encLiq = vault.totalLiquidity();
-        // In mock: handle == plaintext; in production handle is a ciphertext hash
-        (uint64 val, bool ok) = FHE.getDecryptResultSafe(encLiq);
-        assertTrue(ok);
-        assertEq(val, LP_SEED);
-
-        // Confirm there is no public uint256 totalLiquidity that leaks the value
-        // (this is a compile-time guarantee — the function returns euint64, not uint256)
-    }
+    // Removed test_FHEVault_TotalLiquidity_IsEncrypted_NotPlaintext since it's intentionally plaintext now.
 
     function test_FHEVault_LPBalance_IsEncrypted() public {
         euint64 encBal = vault.lpBalance(address(router));

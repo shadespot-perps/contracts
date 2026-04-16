@@ -20,3 +20,4 @@ Trader opened 100 USDC 2x long at $3000, closed at $3300. `finalAmount = 120 USD
 Split `finalAmount` into `collateral` and `profitOrLoss` before calling the vault, and call `vault.receiveLoss()` when `finalAmount < collateral`.
 
 ---
+    
