@@ -1,0 +1,9 @@
+{
+    "name": "shadespot-keeper",
+    "version": "1.0.0",
+    "type": "module",
+    "dependencies": {
+        "@cofhe/sdk": "latest",
+        "viem": "^2.0.0"
+    }
+}
