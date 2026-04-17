@@ -33,6 +33,11 @@ contract FHERouter {
     /// @notice The only token that can be used as a trade (index) token in this pool.
     address public immutable indexToken;
 
+    address public owner;
+    /// @notice ETH fee required for each trading action (open, close, order, liquidate).
+    uint256 public actionFee;
+    uint256 public collectedFees;
+
     event OpenPosition(
         address indexed trader,
         address token,
@@ -57,6 +62,20 @@ contract FHERouter {
     event AddLiquidity(address indexed user, uint256 amount);
     event RemoveLiquidity(address indexed user, uint256 amount);
 
+    event ActionFeeSet(uint256 newFee);
+    event FeesWithdrawn(address indexed recipient, uint256 amount);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier requireFee() {
+        require(msg.value >= actionFee, "Insufficient ETH fee");
+        collectedFees += msg.value;
+        _;
+    }
+
     constructor(
         address _positionManager,
         address _vault,
@@ -72,6 +91,20 @@ contract FHERouter {
         fundingManager  = FundingRateManager(_fundingManager);
         collateralToken = IEncryptedERC20(_collateralToken);
         indexToken      = _indexToken;
+        owner           = msg.sender;
+    }
+
+    function setActionFee(uint256 _fee) external onlyOwner {
+        actionFee = _fee;
+        emit ActionFeeSet(_fee);
+    }
+
+    function withdrawFees(address payable recipient) external onlyOwner {
+        uint256 amount = collectedFees;
+        collectedFees = 0;
+        (bool ok, ) = recipient.call{value: amount}("");
+        require(ok, "ETH transfer failed");
+        emit FeesWithdrawn(recipient, amount);
     }
 
     // -------------------------------------------------
@@ -109,7 +142,7 @@ contract FHERouter {
         uint256 collateral,
         uint256 leverage,
         bool isLong
-    ) external {
+    ) external payable requireFee {
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 
@@ -129,7 +162,7 @@ contract FHERouter {
     // CLOSE POSITION
     // -------------------------------------------------
 
-    function closePosition(address token, bool isLong) external {
+    function closePosition(address token, bool isLong) external payable requireFee {
         fundingManager.updateFunding(token);
         positionManager.requestClosePosition(msg.sender, token, isLong);
         emit ClosePosition(msg.sender, token, isLong);
@@ -149,7 +182,7 @@ contract FHERouter {
         uint256 leverage,
         uint256 triggerPrice,
         bool isLong
-    ) external {
+    ) external payable requireFee {
         require(collateral > 0, "invalid collateral");
         require(token == indexToken, "unsupported index token");
 

@@ -19,11 +19,23 @@ contract LiquidationManager {
     PositionManager public positionManager;
     FundingRateManager public fundingManager;
 
+    address public owner;
+    /// @notice ETH fee required to call liquidate.
+    uint256 public liquidationFee;
+    uint256 public collectedFees;
+
     event LiquidationExecuted(
         address indexed trader,
         address indexed liquidator,
         address indexed token
     );
+    event LiquidationFeeSet(uint256 newFee);
+    event FeesWithdrawn(address indexed recipient, uint256 amount);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
 
     constructor(
         address _positionManager,
@@ -31,6 +43,20 @@ contract LiquidationManager {
     ) {
         positionManager = PositionManager(_positionManager);
         fundingManager = FundingRateManager(_fundingManager);
+        owner = msg.sender;
+    }
+
+    function setLiquidationFee(uint256 _fee) external onlyOwner {
+        liquidationFee = _fee;
+        emit LiquidationFeeSet(_fee);
+    }
+
+    function withdrawFees(address payable recipient) external onlyOwner {
+        uint256 amount = collectedFees;
+        collectedFees = 0;
+        (bool ok, ) = recipient.call{value: amount}("");
+        require(ok, "ETH transfer failed");
+        emit FeesWithdrawn(recipient, amount);
     }
 
     // -------------------------------------------------------
@@ -49,7 +75,10 @@ contract LiquidationManager {
         address trader,
         address token,
         bool isLong
-    ) external {
+    ) external payable {
+        require(msg.value >= liquidationFee, "Insufficient ETH fee");
+        collectedFees += msg.value;
+
         // Best-effort funding settlement before the liquidation check
         fundingManager.updateFunding(token);
 
