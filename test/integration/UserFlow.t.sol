@@ -231,9 +231,14 @@ contract UserFlowTest is Test {
 
         assertEq(vault.totalLiquidity(), 110_000 * 1e18);
 
+        // trader received SLP shares equal to deposit (pool ratio is 1:1 here)
+        uint256 shares = vault.balanceOf(trader);
+        assertEq(shares, amount);
+
         vm.prank(trader);
-        router.removeLiquidity(amount);
+        router.removeLiquidity(shares);
 
         assertEq(vault.totalLiquidity(), 100_000 * 1e18);
+        assertEq(collateralToken.balanceOf(trader), amount);
     }
 }

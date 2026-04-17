@@ -12,6 +12,6 @@ interface IVault {
     function payTrader(address user, uint256 profit, uint256 returnedCollateral) external;
     function receiveLoss(uint256 amount) external;
     function refundCollateral(address user, uint256 amount) external;
-    function deposit(uint256 amount) external;
-    function withdraw(uint256 amount) external;
+    function deposit(address lp, uint256 amount) external;
+    function withdraw(address lp, uint256 shares) external;
 }

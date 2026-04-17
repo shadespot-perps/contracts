@@ -51,7 +51,7 @@ contract LiquidationManagerTest is Test {
         oracle.setPrice(token, 2000 * 1e18);
 
         vm.prank(router);
-        vault.deposit(100_000 * 1e18);
+        vault.deposit(router, 100_000 * 1e18);
         collateralToken.mint(address(vault), 100_000 * 1e18);
     }
 

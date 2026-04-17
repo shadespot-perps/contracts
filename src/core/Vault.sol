@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract Vault {
-    
+contract Vault is ERC20 {
 
     IERC20 public immutable collateralToken;
 
@@ -14,10 +14,8 @@ contract Vault {
     uint256 public totalReserved;
     address public owner;
 
-    mapping(address => uint256) public lpBalance;
-
-    event Deposit(address indexed user, uint256 amount);
-    event Withdraw(address indexed user, uint256 amount);
+    event Deposit(address indexed lp, uint256 amount, uint256 shares);
+    event Withdraw(address indexed lp, uint256 shares, uint256 amount);
 
     event IncreaseReserved(uint256 amount);
     event DecreaseReserved(uint256 amount);
@@ -42,7 +40,7 @@ contract Vault {
         _;
     }
 
-    constructor(address _token, address _owner) {
+    constructor(address _token, address _owner) ERC20("ShadeSpot LP", "SLP") {
         collateralToken = IERC20(_token);
         owner = _owner;
     }
@@ -62,27 +60,31 @@ function setRouter(address _router) external onlyOwner {
     // LP FUNCTIONS
     // ------------------------------------------------
 
-    function deposit(uint256 amount) external onlyRouter{
-
+    function deposit(address lp, uint256 amount) external onlyRouter {
         require(amount > 0, "Invalid amount");
 
-        lpBalance[msg.sender] += amount;
-        totalLiquidity += amount;
+        uint256 supply = totalSupply();
+        uint256 shares = (supply == 0 || totalLiquidity == 0)
+            ? amount
+            : (amount * supply) / totalLiquidity;
 
-        emit Deposit(msg.sender, amount);
+        totalLiquidity += amount;
+        _mint(lp, shares);
+
+        emit Deposit(lp, amount, shares);
     }
 
-    function withdraw(uint256 amount) external onlyRouter {
+    function withdraw(address lp, uint256 shares) external onlyRouter {
+        require(balanceOf(lp) >= shares, "Insufficient shares");
 
-        require(lpBalance[msg.sender] >= amount, "Insufficient balance");
+        uint256 amount = (shares * totalLiquidity) / totalSupply();
         require(availableLiquidity() >= amount, "Liquidity locked");
 
-        lpBalance[msg.sender] -= amount;
         totalLiquidity -= amount;
+        _burn(lp, shares);
+        collateralToken.transfer(lp, amount);
 
-        collateralToken.transfer(msg.sender, amount);
-
-        emit Withdraw(msg.sender, amount);
+        emit Withdraw(lp, shares, amount);
     }
 
     // ------------------------------------------------

@@ -232,22 +232,14 @@ contract Router {
     // -------------------------------------------------
 
     function addLiquidity(uint256 amount) external {
-
-        collateralToken.transferFrom(
-            msg.sender,
-            address(vault),
-            amount
-        );
-
-        vault.deposit(amount);
-
+        collateralToken.transferFrom(msg.sender, address(vault), amount);
+        vault.deposit(msg.sender, amount);
         emit AddLiquidity(msg.sender, amount);
     }
 
-    function removeLiquidity(uint256 amount) external {
-
-        vault.withdraw(amount);
-
-        emit RemoveLiquidity(msg.sender, amount);
+    /// @param shares SLP token amount to redeem, received from vault.balanceOf(msg.sender)
+    function removeLiquidity(uint256 shares) external {
+        vault.withdraw(msg.sender, shares);
+        emit RemoveLiquidity(msg.sender, shares);
     }
 }

@@ -204,8 +204,8 @@ contract FHEPoolTest is Test {
     }
 
     function test_FHEVault_LPBalance_Encrypted() public {
-        // lpBalance[router] should equal LP_SEED (router is msg.sender when calling deposit)
-        (uint64 bal, bool ok) = FHE.getDecryptResultSafe(vault.lpBalance(address(router)));
+        // lpBalance[lp] should equal LP_SEED (lp address is passed through router.addLiquidity)
+        (uint64 bal, bool ok) = FHE.getDecryptResultSafe(vault.lpBalance(lp));
         assertTrue(ok);
         assertEq(bal, LP_SEED);
     }
@@ -226,18 +226,18 @@ contract FHEPoolTest is Test {
         vm.prank(lp);
         router.removeLiquidity(withdrawAmt);
 
-        // router (msg.sender in vault.withdraw) receives the tokens
-        (uint64 routerBal, ) = FHE.getDecryptResultSafe(
-            fheToken.confidentialBalanceOf(address(router))
+        // lp directly receives the tokens (vault.withdraw sends to lp address)
+        (uint64 lpBal, ) = FHE.getDecryptResultSafe(
+            fheToken.confidentialBalanceOf(lp)
         );
-        assertEq(routerBal, withdrawAmt);
+        assertEq(lpBal, withdrawAmt);
     }
 
     function test_FHEVault_Withdraw_InsufficientBalance_Reverts() public {
-        // Router (the only valid caller) tries to withdraw more than its lpBalance (LP_SEED)
+        // lp deposited LP_SEED — trying to withdraw more reverts
         vm.prank(address(router));
         vm.expectRevert("Insufficient balance");
-        vault.withdraw(LP_SEED + 1);
+        vault.withdraw(lp, LP_SEED + 1);
     }
 
     function test_FHEVault_Withdraw_LiquidityLocked_Reverts() public {
@@ -245,11 +245,11 @@ contract FHEPoolTest is Test {
         vm.prank(trader);
         router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
         // available = LP_SEED - SIZE = 95_000e6 < LP_SEED
-        // lpBalance[router] = LP_SEED — passes balance check
+        // lpBalance[lp] = LP_SEED — passes balance check
         // but LP_SEED > available → fails liquidity check
         vm.prank(address(router));
         vm.expectRevert("Liquidity locked");
-        vault.withdraw(LP_SEED);
+        vault.withdraw(lp, LP_SEED);
     }
 
     function test_FHEVault_ReserveLiquidity_EncryptedReservedUpdated() public {
@@ -572,7 +572,7 @@ contract FHEPoolTest is Test {
     }
 
     function test_FHEVault_LPBalance_IsEncrypted() public {
-        euint64 encBal = vault.lpBalance(address(router));
+        euint64 encBal = vault.lpBalance(lp);
         (uint64 val, bool ok) = FHE.getDecryptResultSafe(encBal);
         assertTrue(ok);
         assertEq(val, LP_SEED);

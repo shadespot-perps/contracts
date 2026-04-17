@@ -236,12 +236,29 @@ contract FHERouter {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         FHE.allow(eAmount, address(collateralToken));
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eAmount);
-        vault.deposit(amount);
+        vault.deposit(msg.sender, amount);
         emit AddLiquidity(msg.sender, amount);
     }
 
-    function removeLiquidity(uint256 amount) external {
-        vault.withdraw(amount);
-        emit RemoveLiquidity(msg.sender, amount);
+    /**
+     * @notice Phase 1 of remove liquidity: compute the encrypted share-to-token
+     *         ratio and submit CoFHE decrypt tasks for balance and liquidity checks.
+     *         Wait ~15–30 s for the dispatcher to publish results, then call
+     *         removeLiquidity with the same shares value.
+     * @param shares Plaintext share amount to redeem (visible in the LP's lpBalance).
+     */
+    function submitWithdrawCheck(uint256 shares) external {
+        vault.submitWithdrawCheck(msg.sender, shares);
+    }
+
+    /**
+     * @notice Phase 2 of remove liquidity: execute the withdrawal using pre-submitted
+     *         decrypt results. The payout is sent as an encrypted euint64 transfer —
+     *         the exact amount is never exposed on-chain.
+     * @param shares Must match the value passed to submitWithdrawCheck.
+     */
+    function removeLiquidity(uint256 shares) external {
+        vault.withdraw(msg.sender, shares);
+        emit RemoveLiquidity(msg.sender, shares);
     }
 }
