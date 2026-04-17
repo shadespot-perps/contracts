@@ -35,7 +35,7 @@ import {ITaskManager} from "cofhe-contracts/ICofhe.sol";
  *   fheToken.setOperator(address(fheRouter), untilTimestamp)
  */
 contract FHEVault is IVault {
-    address private constant TASK_MANAGER = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
+    address public immutable TASK_MANAGER;
 
     IEncryptedERC20 public immutable collateralToken;
 
@@ -87,9 +87,11 @@ contract FHEVault is IVault {
         _;
     }
 
-    constructor(address _token, address _owner) {
+    constructor(address _token, address _owner, address _taskManager) {
+        require(_taskManager != address(0), "invalid task manager");
         collateralToken = IEncryptedERC20(_token);
         owner = _owner;
+        TASK_MANAGER = _taskManager;
     }
 
     function setPositionManager(address _pm) external onlyOwner {
@@ -114,6 +116,7 @@ contract FHEVault is IVault {
      */
     function deposit(address lp, uint256 amount) external onlyRouter {
         require(amount > 0, "Invalid amount");
+        require(amount <= type(uint64).max, "amount exceeds uint64 max");
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         euint64 shares;
 
@@ -175,7 +178,8 @@ contract FHEVault is IVault {
      * @param lp     LP redeeming shares.
      * @param shares Must match the value submitted in submitWithdrawCheck.
      */
-    function withdraw(address lp, uint256 shares) external onlyRouter {
+    // Returns 0 — payout amount is encrypted and never exposed as plaintext in this vault.
+    function withdraw(address lp, uint256 shares) external onlyRouter returns (uint256) {
         PendingWithdraw storage pw = pendingWithdraw[lp];
         require(pw.shares == shares && pw.shares > 0, "No pending withdraw or shares mismatch");
 
@@ -209,6 +213,7 @@ contract FHEVault is IVault {
         collateralToken.confidentialTransfer(lp, eAmount);
 
         emit Withdraw(lp, shares);
+        return 0; // payout amount is encrypted; plaintext not available in this vault
     }
 
     // --------------------------------------------------------
@@ -287,6 +292,10 @@ contract FHEVault is IVault {
 
             actualProfit   = uint256(decProfit);
             totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(actualProfit)));
+            FHE.allow(totalLiquidity, address(this));
+        }
+        if (returnedCollateral > 0) {
+            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(returnedCollateral)));
             FHE.allow(totalLiquidity, address(this));
         }
 

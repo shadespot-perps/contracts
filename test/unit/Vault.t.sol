@@ -108,6 +108,7 @@ contract VaultTest is Test {
         vm.prank(router);
         vault.deposit(lp, amount);
 
+        vm.roll(block.number + 1);
         vm.prank(router);
         vault.withdraw(lp, amount); // shares == amount on first deposit
 
@@ -124,6 +125,7 @@ contract VaultTest is Test {
         vm.prank(router);
         vault.deposit(lp, amount);
 
+        vm.roll(block.number + 1);
         vm.prank(router);
         vault.withdraw(lp, 400 * 1e18); // redeem 400 shares → 400 tokens
 
@@ -145,6 +147,7 @@ contract VaultTest is Test {
         // totalLiquidity=1500, totalSupply=1000
 
         // Redeem all 1000 shares → 1000 * 1500 / 1000 = 1500 tokens
+        vm.roll(block.number + 1);
         vm.prank(router);
         vault.withdraw(lp, 1000 * 1e18);
 
@@ -168,6 +171,7 @@ contract VaultTest is Test {
         vault.reserveLiquidity(800 * 1e18, address(this));
 
         // 400 shares → 400 tokens, but only 200 available
+        vm.roll(block.number + 1);
         vm.prank(router);
         vm.expectRevert("Liquidity locked");
         vault.withdraw(lp, 400 * 1e18);
@@ -218,7 +222,8 @@ contract VaultTest is Test {
         vault.payTrader(trader, 50 * 1e18, 200 * 1e18);
 
         assertEq(collateralToken.balanceOf(trader), 250 * 1e18);
-        assertEq(vault.totalLiquidity(), 950 * 1e18);
+        // totalLiquidity: 1000 - 50 (profit) - 200 (returned collateral) = 750
+        assertEq(vault.totalLiquidity(), 750 * 1e18);
     }
 
     function test_PayTrader_OnlyCollateral() public {
@@ -231,7 +236,8 @@ contract VaultTest is Test {
         vault.payTrader(trader, 0, 200 * 1e18);
 
         assertEq(collateralToken.balanceOf(trader), 200 * 1e18);
-        assertEq(vault.totalLiquidity(), 1000 * 1e18);
+        // totalLiquidity: 1000 - 200 (returned collateral) = 800
+        assertEq(vault.totalLiquidity(), 800 * 1e18);
     }
 
     function test_ReceiveLoss() public {

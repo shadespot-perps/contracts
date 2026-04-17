@@ -85,7 +85,7 @@ contract FHEPoolTest is Test {
 
         oracle = new PriceOracle();
         frm    = new FundingRateManager();
-        vault  = new FHEVault(address(fheToken), owner);
+        vault  = new FHEVault(address(fheToken), owner, TASK_MANAGER_ADDRESS );
         pm     = new PositionManager(address(vault), address(oracle), address(frm));
         lm     = new LiquidationManager(address(pm), address(frm));
         om     = new OrderManager(address(oracle), address(frm), owner);
@@ -213,8 +213,10 @@ contract FHEPoolTest is Test {
     function test_FHEVault_Withdraw_ReducesEncryptedBalance() public {
         uint64 withdrawAmt = uint64(10_000e6);
 
-        vm.prank(lp);
+        vm.startPrank(lp);
+        router.submitWithdrawCheck(withdrawAmt);
         router.removeLiquidity(withdrawAmt);
+        vm.stopPrank();
 
         (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
         assertEq(liq, LP_SEED - withdrawAmt);
@@ -223,8 +225,10 @@ contract FHEPoolTest is Test {
     function test_FHEVault_Withdraw_TransfersTokensToLP() public {
         uint64 withdrawAmt = uint64(10_000e6);
 
-        vm.prank(lp);
+        vm.startPrank(lp);
+        router.submitWithdrawCheck(withdrawAmt);
         router.removeLiquidity(withdrawAmt);
+        vm.stopPrank();
 
         // lp directly receives the tokens (vault.withdraw sends to lp address)
         (uint64 lpBal, ) = FHE.getDecryptResultSafe(
@@ -234,9 +238,12 @@ contract FHEPoolTest is Test {
     }
 
     function test_FHEVault_Withdraw_InsufficientBalance_Reverts() public {
-        // lp deposited LP_SEED — trying to withdraw more reverts
+        // submitWithdrawCheck with LP_SEED+1 — encrypted balance check returns false
+        vm.prank(lp);
+        router.submitWithdrawCheck(LP_SEED + 1);
+
         vm.prank(address(router));
-        vm.expectRevert("Insufficient balance");
+        vm.expectRevert("Insufficient shares");
         vault.withdraw(lp, LP_SEED + 1);
     }
 
@@ -247,6 +254,9 @@ contract FHEPoolTest is Test {
         // available = LP_SEED - SIZE = 95_000e6 < LP_SEED
         // lpBalance[lp] = LP_SEED — passes balance check
         // but LP_SEED > available → fails liquidity check
+        vm.prank(lp);
+        router.submitWithdrawCheck(LP_SEED);
+
         vm.prank(address(router));
         vm.expectRevert("Liquidity locked");
         vault.withdraw(lp, LP_SEED);
@@ -460,8 +470,10 @@ contract FHEPoolTest is Test {
     function test_FHERouter_RemoveLiquidity_Works() public {
         uint64 withdrawAmt = uint64(10_000e6);
 
-        vm.prank(lp);
+        vm.startPrank(lp);
+        router.submitWithdrawCheck(withdrawAmt);
         router.removeLiquidity(withdrawAmt);
+        vm.stopPrank();
 
         (uint64 liq, ) = FHE.getDecryptResultSafe(vault.totalLiquidity());
         assertEq(liq, LP_SEED - withdrawAmt);

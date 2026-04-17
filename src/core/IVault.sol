@@ -13,5 +13,5 @@ interface IVault {
     function receiveLoss(uint256 amount) external;
     function refundCollateral(address user, uint256 amount) external;
     function deposit(address lp, uint256 amount) external;
-    function withdraw(address lp, uint256 shares) external;
+    function withdraw(address lp, uint256 shares) external returns (uint256 amount);
 }

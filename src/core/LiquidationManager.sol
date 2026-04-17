@@ -24,6 +24,9 @@ contract LiquidationManager {
     uint256 public liquidationFee;
     uint256 public collectedFees;
 
+    // Binds the liquidator who paid the fee to the finalize step, preventing reward theft.
+    mapping(bytes32 => address) public pendingLiquidator;
+
     event LiquidationExecuted(
         address indexed trader,
         address indexed liquidator,
@@ -77,10 +80,14 @@ contract LiquidationManager {
         bool isLong
     ) external payable {
         require(msg.value >= liquidationFee, "Insufficient ETH fee");
+        require(msg.sender != trader, "self-liquidation not allowed");
         collectedFees += msg.value;
 
         // Best-effort funding settlement before the liquidation check
         fundingManager.updateFunding(token);
+
+        bytes32 key = positionManager.getPositionKey(trader, token, isLong);
+        pendingLiquidator[key] = msg.sender;
 
         positionManager.liquidate(trader, token, isLong, msg.sender);
 
@@ -101,11 +108,16 @@ contract LiquidationManager {
         uint256 sizePlain,
         bytes calldata sizeSignature
     ) external {
+        bytes32 key = positionManager.getPositionKey(trader, token, isLong);
+        address liquidator = pendingLiquidator[key];
+        require(liquidator != address(0), "no pending liquidation");
+        delete pendingLiquidator[key];
+
         positionManager.finalizeLiquidation(
             trader,
             token,
             isLong,
-            msg.sender,
+            liquidator,
             canLiquidatePlain,
             canLiquidateSignature,
             collateralPlain,

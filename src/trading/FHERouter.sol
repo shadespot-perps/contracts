@@ -144,6 +144,7 @@ contract FHERouter {
         bool isLong
     ) external payable requireFee {
         require(collateral > 0, "invalid collateral");
+        require(collateral <= type(uint64).max, "collateral exceeds uint64 max");
         require(token == indexToken, "unsupported index token");
 
         fundingManager.updateFunding(token);
@@ -184,6 +185,7 @@ contract FHERouter {
         bool isLong
     ) external payable requireFee {
         require(collateral > 0, "invalid collateral");
+        require(collateral <= type(uint64).max, "collateral exceeds uint64 max");
         require(token == indexToken, "unsupported index token");
 
         euint64 eCollateral = FHE.asEuint64(uint64(collateral));
@@ -233,6 +235,8 @@ contract FHERouter {
      * @dev Caller must have granted this router operator status on the FHE token.
      */
     function addLiquidity(uint256 amount) external {
+        require(amount > 0, "invalid amount");
+        require(amount <= type(uint64).max, "amount exceeds uint64 max");
         euint64 eAmount = FHE.asEuint64(uint64(amount));
         FHE.allow(eAmount, address(collateralToken));
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eAmount);

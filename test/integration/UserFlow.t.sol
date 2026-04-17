@@ -235,8 +235,9 @@ contract UserFlowTest is Test {
         uint256 shares = vault.balanceOf(trader);
         assertEq(shares, amount);
 
+        vm.roll(block.number + 1);
         vm.prank(trader);
-        router.removeLiquidity(shares);
+        router.removeLiquidity(shares , 2000);
 
         assertEq(vault.totalLiquidity(), 100_000 * 1e18);
         assertEq(collateralToken.balanceOf(trader), amount);

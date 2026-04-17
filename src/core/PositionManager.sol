@@ -42,6 +42,7 @@ contract PositionManager {
     uint256 public constant MAX_LEVERAGE = 10;
     uint256 public constant LIQUIDATION_THRESHOLD = 80;
     uint256 public constant FUNDING_PRECISION = 1e12;
+    uint256 public constant MIN_COLLATERAL = 1e6;
 
     event PositionOpened(address trader, address token, uint256 size, uint256 collateral, bool isLong);
     event PositionClosed(address trader, address token);
@@ -70,6 +71,7 @@ contract PositionManager {
     }
 
     function setRouter(address _router) external onlyOwner {
+        require(router == address(0), "Already set");
         router = _router;
     }
 
@@ -100,7 +102,7 @@ contract PositionManager {
     ) external onlyRouter {
 
         require(leverage <= MAX_LEVERAGE, "exceeds max leverage");
-        require(collateral > 0, "invalid collateral");
+        require(collateral >= MIN_COLLATERAL, "collateral below minimum");
 
         uint256 sizePlain = collateral * leverage;
         uint256 pricePlain = oracle.getPrice(token);

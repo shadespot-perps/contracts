@@ -237,9 +237,11 @@ contract Router {
         emit AddLiquidity(msg.sender, amount);
     }
 
-    /// @param shares SLP token amount to redeem, received from vault.balanceOf(msg.sender)
-    function removeLiquidity(uint256 shares) external {
-        vault.withdraw(msg.sender, shares);
+    /// @param shares       SLP token amount to redeem, received from vault.balanceOf(msg.sender)
+    /// @param minAmountOut Minimum collateral to receive; reverts if slippage exceeds this
+    function removeLiquidity(uint256 shares, uint256 minAmountOut) external {
+        uint256 amount = vault.withdraw(msg.sender, shares);
+        require(amount >= minAmountOut, "slippage exceeded");
         emit RemoveLiquidity(msg.sender, shares);
     }
 }

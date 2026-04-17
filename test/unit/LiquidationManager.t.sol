@@ -116,9 +116,10 @@ contract LiquidationManagerTest is Test {
         vm.prank(liquidator);
         lm.finalizeLiquidation(trader, token, isLong, true, "", collateral, "", collateral * leverage, "");
 
-        // Vault receives collateral minus liquidator reward: 1000 - 50 = 950
-        // Total liquidity: 100 000 + 950 = 100 950
-        assertEq(vault.totalLiquidity(), 100_950 * 1e18);
+        // Vault receives collateral minus liquidator reward via receiveLoss: +950
+        // Then payTrader(liquidator, 0, 50) decrements totalLiquidity: -50
+        // Total liquidity: 100_000 + 950 - 50 = 100_900
+        assertEq(vault.totalLiquidity(), 100_900 * 1e18);
     }
 
     function test_Liquidate_Revert_NotLiquidatable() public {

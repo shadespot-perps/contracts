@@ -3,8 +3,10 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract Vault is ERC20 {
+    using SafeERC20 for IERC20;
 
     IERC20 public immutable collateralToken;
 
@@ -13,6 +15,8 @@ contract Vault is ERC20 {
     uint256 public totalLiquidity;
     uint256 public totalReserved;
     address public owner;
+
+    mapping(address => uint256) public depositBlock;
 
     event Deposit(address indexed lp, uint256 amount, uint256 shares);
     event Withdraw(address indexed lp, uint256 shares, uint256 amount);
@@ -68,21 +72,23 @@ function setRouter(address _router) external onlyOwner {
             ? amount
             : (amount * supply) / totalLiquidity;
 
+        depositBlock[lp] = block.number;
         totalLiquidity += amount;
         _mint(lp, shares);
 
         emit Deposit(lp, amount, shares);
     }
 
-    function withdraw(address lp, uint256 shares) external onlyRouter {
+    function withdraw(address lp, uint256 shares) external onlyRouter returns (uint256 amount) {
+        require(block.number > depositBlock[lp], "Must hold for at least one block");
         require(balanceOf(lp) >= shares, "Insufficient shares");
 
-        uint256 amount = (shares * totalLiquidity) / totalSupply();
+        amount = (shares * totalLiquidity) / totalSupply();
         require(availableLiquidity() >= amount, "Liquidity locked");
 
         totalLiquidity -= amount;
         _burn(lp, shares);
-        collateralToken.transfer(lp, amount);
+        collateralToken.safeTransfer(lp, amount);
 
         emit Withdraw(lp, shares, amount);
     }
@@ -130,15 +136,18 @@ function setRouter(address _router) external onlyOwner {
             }
             totalLiquidity -= actualProfit;
         }
-        
+        if (returnedCollateral > 0) {
+            totalLiquidity -= returnedCollateral;
+        }
+
         uint256 amount = actualProfit + returnedCollateral;
-        collateralToken.transfer(user, amount);
+        collateralToken.safeTransfer(user, amount);
 
         emit PayOut(user, amount);
     }
 
     function refundCollateral(address user, uint256 amount) external onlyRouter {
-        collateralToken.transfer(user, amount);
+        collateralToken.safeTransfer(user, amount);
     }
 
     function receiveLoss(uint256 amount)
