@@ -577,4 +577,88 @@ contract FHEPoolTest is Test {
         assertTrue(ok);
         assertEq(val, LP_SEED);
     }
+
+    // ======================================================================
+    // SECTION 6 — FHERouter: setActionFee
+    // ======================================================================
+
+    function test_FHERouter_SetActionFee_UpdatesState() public {
+        uint256 fee = 0.01 ether;
+        router.setActionFee(fee);
+        assertEq(router.actionFee(), fee);
+    }
+
+    function test_FHERouter_SetActionFee_EmitsEvent() public {
+        uint256 fee = 0.005 ether;
+        vm.expectEmit(false, false, false, true);
+        emit FHERouter.ActionFeeSet(fee);
+        router.setActionFee(fee);
+    }
+
+    function test_FHERouter_SetActionFee_CanBeSetToZero() public {
+        router.setActionFee(0.01 ether);
+        router.setActionFee(0);
+        assertEq(router.actionFee(), 0);
+    }
+
+    function test_FHERouter_SetActionFee_Revert_NotOwner() public {
+        vm.prank(address(0xDEAD));
+        vm.expectRevert("Not owner");
+        router.setActionFee(0.01 ether);
+    }
+
+    function test_FHERouter_SetActionFee_EnforcedOnOpenPosition() public {
+        uint256 fee = 0.01 ether;
+        router.setActionFee(fee);
+
+        vm.prank(trader);
+        vm.expectRevert("Insufficient ETH fee");
+        router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
+
+        vm.deal(trader, fee);
+        vm.prank(trader);
+        router.openPosition{value: fee}(ethToken, COLLATERAL, LEVERAGE, true);
+    }
+
+    function test_FHERouter_SetActionFee_EnforcedOnClosePosition() public {
+        uint256 fee = 0.01 ether;
+
+        vm.prank(trader);
+        router.openPosition(ethToken, COLLATERAL, LEVERAGE, true);
+
+        router.setActionFee(fee);
+
+        vm.prank(trader);
+        vm.expectRevert("Insufficient ETH fee");
+        router.closePosition(ethToken, true);
+
+        vm.deal(trader, fee);
+        vm.prank(trader);
+        router.closePosition{value: fee}(ethToken, true);
+    }
+
+    function test_FHERouter_SetActionFee_AccumulatesCollectedFees() public {
+        uint256 fee = 0.01 ether;
+        router.setActionFee(fee);
+
+        vm.deal(trader, fee);
+        vm.prank(trader);
+        router.openPosition{value: fee}(ethToken, COLLATERAL, LEVERAGE, true);
+
+        assertEq(router.collectedFees(), fee);
+    }
+
+    function test_FHERouter_SetActionFee_AccumulatesAcrossMultipleActions() public {
+        uint256 fee = 0.01 ether;
+        router.setActionFee(fee);
+
+        vm.deal(trader, fee * 2);
+        vm.prank(trader);
+        router.openPosition{value: fee}(ethToken, COLLATERAL, LEVERAGE, true);
+
+        vm.prank(trader);
+        router.closePosition{value: fee}(ethToken, true);
+
+        assertEq(router.collectedFees(), fee * 2);
+    }
 }

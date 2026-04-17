@@ -152,6 +152,71 @@ contract UserFlowTest is Test {
     }
 
     // ------------------------------------------------------------------
+    // setActionFee
+    // ------------------------------------------------------------------
+
+    function test_SetActionFee_UpdatesState() public {
+        uint256 fee = 0.01 ether;
+        router.setActionFee(fee);
+        assertEq(router.actionFee(), fee);
+    }
+
+    function test_SetActionFee_EmitsEvent() public {
+        uint256 fee = 0.005 ether;
+        vm.expectEmit(false, false, false, true);
+        emit Router.ActionFeeSet(fee);
+        router.setActionFee(fee);
+    }
+
+    function test_SetActionFee_CanBeSetToZero() public {
+        router.setActionFee(0.01 ether);
+        router.setActionFee(0);
+        assertEq(router.actionFee(), 0);
+    }
+
+    function test_SetActionFee_Revert_NotOwner() public {
+        vm.prank(address(0xDEAD));
+        vm.expectRevert("Not owner");
+        router.setActionFee(0.01 ether);
+    }
+
+    function test_SetActionFee_EnforcedOnOpenPosition() public {
+        uint256 fee        = 0.01 ether;
+        uint256 collateral = 1000 * 1e18;
+
+        router.setActionFee(fee);
+
+        collateralToken.mint(trader, collateral);
+        vm.startPrank(trader);
+        collateralToken.approve(address(router), collateral);
+
+        vm.expectRevert("Insufficient ETH fee");
+        router.openPosition(token, collateral, 5, true);
+        vm.stopPrank();
+
+        vm.deal(trader, fee);
+        vm.startPrank(trader);
+        router.openPosition{value: fee}(token, collateral, 5, true);
+        vm.stopPrank();
+    }
+
+    function test_SetActionFee_AccumulatesCollectedFees() public {
+        uint256 fee        = 0.01 ether;
+        uint256 collateral = 1000 * 1e18;
+
+        router.setActionFee(fee);
+
+        collateralToken.mint(trader, collateral);
+        vm.deal(trader, fee);
+        vm.startPrank(trader);
+        collateralToken.approve(address(router), collateral);
+        router.openPosition{value: fee}(token, collateral, 5, true);
+        vm.stopPrank();
+
+        assertEq(router.collectedFees(), fee);
+    }
+
+    // ------------------------------------------------------------------
     // LP ADD / REMOVE LIQUIDITY
     // ------------------------------------------------------------------
 

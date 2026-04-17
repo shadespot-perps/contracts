@@ -139,4 +139,75 @@ contract LiquidationManagerTest is Test {
         vm.expectRevert("not liquidatable");
         lm.finalizeLiquidation(trader, token, isLong, false, "", collateral, "", collateral * leverage, "");
     }
+
+    // ------------------------------------------------------------------
+    // setLiquidationFee
+    // ------------------------------------------------------------------
+
+    function test_SetLiquidationFee_UpdatesState() public {
+        uint256 fee = 0.01 ether;
+        lm.setLiquidationFee(fee);
+        assertEq(lm.liquidationFee(), fee);
+    }
+
+    function test_SetLiquidationFee_EmitsEvent() public {
+        uint256 fee = 0.005 ether;
+        vm.expectEmit(false, false, false, true);
+        emit LiquidationManager.LiquidationFeeSet(fee);
+        lm.setLiquidationFee(fee);
+    }
+
+    function test_SetLiquidationFee_CanBeSetToZero() public {
+        lm.setLiquidationFee(0.01 ether);
+        lm.setLiquidationFee(0);
+        assertEq(lm.liquidationFee(), 0);
+    }
+
+    function test_SetLiquidationFee_Revert_NotOwner() public {
+        vm.prank(address(0xDEAD));
+        vm.expectRevert("Not owner");
+        lm.setLiquidationFee(0.01 ether);
+    }
+
+    function test_SetLiquidationFee_EnforcedOnLiquidate() public {
+        uint256 collateral = 1000 * 1e18;
+        uint256 leverage   = 10;
+        bool    isLong     = true;
+        uint256 fee        = 0.01 ether;
+
+        lm.setLiquidationFee(fee);
+
+        vm.prank(router);
+        pm.openPosition(trader, token, collateral, leverage, isLong);
+        oracle.setPrice(token, 1800 * 1e18);
+
+        // Should revert when no ETH is sent
+        vm.prank(liquidator);
+        vm.expectRevert("Insufficient ETH fee");
+        lm.liquidate(trader, token, isLong);
+
+        // Should succeed when correct fee is sent
+        vm.deal(liquidator, fee);
+        vm.prank(liquidator);
+        lm.liquidate{value: fee}(trader, token, isLong);
+    }
+
+    function test_SetLiquidationFee_AccumulatesCollectedFees() public {
+        uint256 collateral = 1000 * 1e18;
+        uint256 leverage   = 10;
+        bool    isLong     = true;
+        uint256 fee        = 0.01 ether;
+
+        lm.setLiquidationFee(fee);
+
+        vm.prank(router);
+        pm.openPosition(trader, token, collateral, leverage, isLong);
+        oracle.setPrice(token, 1800 * 1e18);
+
+        vm.deal(liquidator, fee);
+        vm.prank(liquidator);
+        lm.liquidate{value: fee}(trader, token, isLong);
+
+        assertEq(lm.collectedFees(), fee);
+    }
 }
