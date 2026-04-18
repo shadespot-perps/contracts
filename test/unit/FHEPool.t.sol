@@ -370,7 +370,7 @@ contract FHEPoolTest is Test {
         vm.prank(trader);
         router.closePosition(ethToken, true);
         // Finalize with proof (MockTaskManager accepts any signature).
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", false, "");
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -389,7 +389,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", false, "");
 
         // Vault paid out COLLATERAL + PNL to trader.
         // Remaining vault balance = LP_SEED + COLLATERAL - (COLLATERAL + PNL) = LP_SEED - PNL
@@ -413,7 +413,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", false, "");
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -431,7 +431,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", false, "");
 
         // Vault received COLLATERAL on open, paid out (COLLATERAL - PNL) on close.
         // Net gain = PNL. Vault token balance = LP_SEED + PNL.
@@ -449,7 +449,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(ethToken, true);
-        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "");
+        pm.finalizeClosePosition(trader, ethToken, true, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", false, "");
 
         bytes32 key = pm.getPositionKey(trader, ethToken, true);
         assertFalse(pm.getPosition(key).exists);

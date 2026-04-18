@@ -37,7 +37,7 @@ contract DeployPool2Only is Script {
 
         PriceOracle        oracle      = new PriceOracle();
         FundingRateManager fundingMgr  = new FundingRateManager();
-        FHEVault           vault       = new FHEVault(fheToken, deployer);
+        FHEVault           vault       = new FHEVault(fheToken, deployer, 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9);
         PositionManager    positionMgr = new PositionManager(
             address(vault),
             address(oracle),

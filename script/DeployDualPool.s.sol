@@ -160,7 +160,7 @@ contract DeployDualPool is Script {
     function _deployPool2(address collateralToken, address deployer, address indexToken_) internal {
         oracle2         = new PriceOracle();
         fundingManager2 = new FundingRateManager();
-        vault2          = new FHEVault(collateralToken, deployer);
+        vault2          = new FHEVault(collateralToken, deployer, 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9);
         positionManager2 = new PositionManager(
             address(vault2),
             address(oracle2),
