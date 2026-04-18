@@ -167,6 +167,12 @@ contract PositionManager {
 
     uint256 price = oracle.getPrice(token);
 
+
+    ebool canLiquidateEnc = _checkLiquidatable(position, price);
+
+    // store for finalize step
+    pendingCanLiquidate[key] = canLiquidateEnc;
+    FHE.allowPublic(canLiquidateEnc);
     // ================================
     // 1. FULLY ENCRYPTED COMPUTATION
     // ================================
@@ -215,37 +221,64 @@ contract PositionManager {
     emit CloseRequested(key, trader, token, isLong, euint128.unwrap(eFinalAmount));
 }
 
-    function finalizeClosePosition(
-        address trader,
-        address token,
-        bool isLong,
-        uint256 finalAmount,
-        bytes calldata finalAmountSignature,
-        uint256 sizePlain,
-        bytes calldata sizeSignature
-    ) external {
-        bytes32 key = getPositionKey(trader, token, isLong);
-        Position storage position = positions[key];
-        require(position.exists, "position does not exist");
 
-        euint128 eFinalAmount = pendingFinalAmount[key];
-        require(euint128.unwrap(eFinalAmount) != bytes32(0), "close not requested");
+function finalizeClosePosition(
+    address trader,
+    address token,
+    bool isLong,
+    uint256 finalAmount,
+    bytes calldata finalAmountSignature,
+    uint256 sizePlain,
+    bytes calldata sizeSignature,
+    bool canLiquidatePlain,
+    bytes calldata canLiquidateSignature
+) external {
 
-        // Verify Threshold Network proofs and publish results on-chain.
-        FHE.publishDecryptResult(eFinalAmount, uint128(finalAmount), finalAmountSignature);
-        FHE.publishDecryptResult(position.size, uint128(sizePlain), sizeSignature);
+    bytes32 key = getPositionKey(trader, token, isLong);
+    Position storage position = positions[key];
+    require(position.exists, "position does not exist");
 
-        // Finalize settlement using proven plaintexts (no async reads).
-        vault.releaseLiquidity(sizePlain);
-        vault.payTrader(trader, 0, finalAmount);
-        fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
+    euint128 eFinalAmount = pendingFinalAmount[key];
+    require(euint128.unwrap(eFinalAmount) != bytes32(0), "close not requested");
 
-        delete positions[key];
-        pendingFinalAmount[key] = euint128.wrap(bytes32(0));
+    ebool canLiquidateEnc = pendingCanLiquidate[key];
+    require(ebool.unwrap(canLiquidateEnc) != bytes32(0), "liquidation check missing");
 
-        emit PositionClosed(trader, token);
-        emit CloseFinalized(key, trader, token, isLong, finalAmount, sizePlain);
-    }
+    // verify decryptions
+    FHE.publishDecryptResult(
+        canLiquidateEnc,
+        canLiquidatePlain,
+        canLiquidateSignature
+    );
+
+    // block close if liquidatable
+    require(!canLiquidatePlain, "position liquidatable");
+
+    FHE.publishDecryptResult(
+        eFinalAmount,
+        uint128(finalAmount),
+        finalAmountSignature
+    );
+
+    FHE.publishDecryptResult(
+        position.size,
+        uint128(sizePlain),
+        sizeSignature
+    );
+
+    // finalize
+    vault.releaseLiquidity(sizePlain);
+    vault.payTrader(trader, 0, finalAmount);
+    fundingManager.decreaseOpenInterest(token, sizePlain, isLong);
+
+    delete positions[key];
+    pendingFinalAmount[key] = euint128.wrap(bytes32(0));
+    pendingCanLiquidate[key] = ebool.wrap(bytes32(0));
+
+    emit PositionClosed(trader, token);
+    emit CloseFinalized(key, trader, token, isLong, finalAmount, sizePlain);
+}
+
 
     // =========================================================
     // PNL  — returns encrypted magnitude (always >= 0)
@@ -305,6 +338,33 @@ contract PositionManager {
     // LIQUIDATION
     // =========================================================
 
+
+   function _checkLiquidatable(
+    Position storage position,
+    uint256 price
+) internal returns (ebool) {
+    euint128 ePrice = FHE.asEuint128(price);
+
+    // PnL + funding
+    euint128 ePnl        = calculatePnL(position, price);
+    euint128 eFundingFee = calculateFundingFee(position);
+    euint128 eTotalLoss  = FHE.add(ePnl, eFundingFee);
+
+    // Directional loss
+    ebool longLoss  = FHE.lt(ePrice, position.entryPrice);
+    ebool shortLoss = FHE.gt(ePrice, position.entryPrice);
+    ebool isAtLoss  = FHE.select(position.isLong, longLoss, shortLoss);
+
+    // Threshold = 80% collateral
+    euint128 threshold = FHE.div(
+        FHE.mul(position.collateral, FHE.asEuint128(LIQUIDATION_THRESHOLD)),
+        FHE.asEuint128(100)
+    );
+
+    ebool meetsThreshold = FHE.gte(eTotalLoss, threshold);
+
+    return FHE.and(isAtLoss, meetsThreshold);
+}
     // Backwards-compatible entrypoint used by `LiquidationManager`.
     // It now only requests decryption eligibility; settlement is done in `finalizeLiquidation`.
     function liquidate(
