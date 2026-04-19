@@ -47,9 +47,14 @@ contract FHEFundingRateManager {
 
     function initializeToken(address token) external onlyOwner {
         fundingData[token].eCumulativeFundingRateBiased = FHE.asEuint128(FUNDING_RATE_BIAS);
-        fundingData[token].eLongOpenInterest = FHE.asEuint128(0);
-        fundingData[token].eShortOpenInterest = FHE.asEuint128(0);
-        fundingData[token].lastFundingTime = block.timestamp;
+        fundingData[token].eLongOpenInterest            = FHE.asEuint128(0);
+        fundingData[token].eShortOpenInterest           = FHE.asEuint128(0);
+        fundingData[token].lastFundingTime              = block.timestamp;
+
+        // Allow this contract to read these handles in future transactions.
+        FHE.allow(fundingData[token].eCumulativeFundingRateBiased, address(this));
+        FHE.allow(fundingData[token].eLongOpenInterest,            address(this));
+        FHE.allow(fundingData[token].eShortOpenInterest,           address(this));
     }
 
     // -------------------------------------------------
@@ -62,12 +67,16 @@ contract FHEFundingRateManager {
         ebool eIsLong
     ) external onlyPositionManager {
         FHEFundingData storage data = fundingData[token];
-        
-        euint128 eLongAddition = FHE.select(eIsLong, eLeverage, FHE.asEuint128(0));
+
+        euint128 eLongAddition  = FHE.select(eIsLong, eLeverage, FHE.asEuint128(0));
         euint128 eShortAddition = FHE.select(eIsLong, FHE.asEuint128(0), eLeverage);
 
-        data.eLongOpenInterest = FHE.add(data.eLongOpenInterest, eLongAddition);
+        data.eLongOpenInterest  = FHE.add(data.eLongOpenInterest,  eLongAddition);
         data.eShortOpenInterest = FHE.add(data.eShortOpenInterest, eShortAddition);
+
+        // Re-grant this contract access to the updated handles for subsequent reads.
+        FHE.allow(data.eLongOpenInterest,  address(this));
+        FHE.allow(data.eShortOpenInterest, address(this));
 
         emit FHEOpenInterestUpdated(token);
     }
@@ -78,12 +87,16 @@ contract FHEFundingRateManager {
         ebool eIsLong
     ) external onlyPositionManager {
         FHEFundingData storage data = fundingData[token];
-        
-        euint128 eLongSub = FHE.select(eIsLong, eLeverage, FHE.asEuint128(0));
+
+        euint128 eLongSub  = FHE.select(eIsLong, eLeverage, FHE.asEuint128(0));
         euint128 eShortSub = FHE.select(eIsLong, FHE.asEuint128(0), eLeverage);
 
-        data.eLongOpenInterest = FHE.sub(data.eLongOpenInterest, eLongSub);
+        data.eLongOpenInterest  = FHE.sub(data.eLongOpenInterest,  eLongSub);
         data.eShortOpenInterest = FHE.sub(data.eShortOpenInterest, eShortSub);
+
+        // Re-grant this contract access to the updated handles for subsequent reads.
+        FHE.allow(data.eLongOpenInterest,  address(this));
+        FHE.allow(data.eShortOpenInterest, address(this));
 
         emit FHEOpenInterestUpdated(token);
     }
@@ -94,6 +107,9 @@ contract FHEFundingRateManager {
 
     function updateFunding(address token) external {
         FHEFundingData storage data = fundingData[token];
+
+        // Skip silently if initializeToken has not been called for this token yet.
+        if (data.lastFundingTime == 0) return;
 
         if (block.timestamp < data.lastFundingTime + FUNDING_INTERVAL) {
             return;
@@ -114,16 +130,25 @@ contract FHEFundingRateManager {
         // Fhenix euint does support division: FHE.div
         
         euint128 eRate = FHE.div(diff, FHE.asEuint128(100)); // Simplified due to missing secure fractions
-        
+
         euint128 eCurrentRateBiased = data.eCumulativeFundingRateBiased;
+        // allowTransient so we can read the stored handle in this same transaction.
+        FHE.allowTransient(eCurrentRateBiased, address(this));
+
         euint128 eNewRateBiased = FHE.select(
             longDominant,
             FHE.add(eCurrentRateBiased, eRate), // Long pays short
             FHE.sub(eCurrentRateBiased, eRate)  // Short pays long
         );
-        
+
         data.eCumulativeFundingRateBiased = eNewRateBiased;
-        data.lastFundingTime = block.timestamp;
+        data.lastFundingTime              = block.timestamp;
+
+        // Re-grant persistent access so positionManager and this contract can read the new handle.
+        FHE.allow(data.eCumulativeFundingRateBiased, address(this));
+        if (positionManager != address(0)) {
+            FHE.allow(data.eCumulativeFundingRateBiased, positionManager);
+        }
 
         emit FHEFundingUpdated(token);
     }

@@ -70,6 +70,10 @@ contract DeployShadeSpot is Script {
 
         orderManager.setRouter(address(router));
 
+        // Initialize FHE funding state for the index token so updateFunding()
+        // doesn't encounter zero handles on the first trade.
+        fundingManager.initializeToken(indexToken_);
+
         vm.stopBroadcast();
 
         console2.log("\n=== ShadeSpot FHE deployment complete ===");

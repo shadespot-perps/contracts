@@ -176,6 +176,9 @@ contract FHEVault is IVault {
         FHE.allow(encryptedTotalSupply, address(this));
         FHE.allow(totalLiquidity,       address(this));
 
+        // Enable LP to use EIP-712 permits to fetch their balance in the UI
+        FHE.allow(lpBalance[lp],       lp);
+
         emit Deposit(lp, euint64.unwrap(eAmount));
     }
 
@@ -242,10 +245,11 @@ contract FHEVault is IVault {
         PendingWithdraw storage pw = pendingWithdraw[lp];
         require(pw.shares == shares && pw.shares > 0, "No pending withdraw or shares mismatch");
 
-        FHE.publishDecryptResult(pw.hasBal, balPlain, balSig);
+        // Verify Threshold Network proofs without publishing the booleans globally on-chain.
+        require(FHE.verifyDecryptResult(pw.hasBal, balPlain, balSig), "Invalid bal decrypt");
         require(balPlain, "Insufficient shares");
 
-        FHE.publishDecryptResult(pw.hasLiq, liqPlain, liqSig);
+        require(FHE.verifyDecryptResult(pw.hasLiq, liqPlain, liqSig), "Invalid liq decrypt");
         require(liqPlain, "Liquidity locked");
 
         euint64 eAmount = pw.eAmount;
@@ -319,8 +323,8 @@ contract FHEVault is IVault {
         PendingLiqCheck storage plc = pendingLiqCheck[trader];
         require(ebool.unwrap(plc.hasLiq) != bytes32(0), "no pending check");
 
-        // Verifies the Threshold Network proof on-chain — reverts if signature is invalid.
-        FHE.publishDecryptResult(plc.hasLiq, hasLiqPlain, hasLiqSig);
+        // Verifies the Threshold Network proof on-chain without publishing the boolean globally.
+        require(FHE.verifyDecryptResult(plc.hasLiq, hasLiqPlain, hasLiqSig), "Invalid hasLiq decrypt");
 
         // Store encrypted size; no plaintext ever written here.
         _liqApproved[trader]      = hasLiqPlain;

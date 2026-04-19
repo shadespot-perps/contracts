@@ -55,7 +55,7 @@ contract FHEOrderManager {
         address         token,
         bytes32         collateralHandle  // euint64 handle — trader-decryptable
         // triggerPrice intentionally omitted — handle not emitted to avoid correlation
-    );
+    );  
 
     event OrderPriceCheckSubmitted(
         uint256 indexed orderId,
@@ -80,9 +80,9 @@ contract FHEOrderManager {
         address _fundingManager,
         address _owner
     ) {
-        oracle       = PriceOracle(_oracle);
-
-        owner        = _owner;
+        oracle            = PriceOracle(_oracle);
+        fheFundingManager = FHEFundingRateManager(_fundingManager);
+        owner             = _owner;
     }
 
     function setRouter(address _router) external onlyOwner {
@@ -140,7 +140,11 @@ contract FHEOrderManager {
         FHE.allow(eLeverage,     address(this));
         FHE.allow(eTriggerPrice, address(this));
         FHE.allow(eIsLong,       address(this));
-        FHE.allow(eCollateral,   trader); // trader can verify their own collateral
+        
+        // Trader permit ACL — enables decrypting own order details off-chain via SDK
+        FHE.allow(eCollateral,   trader);
+        FHE.allow(eLeverage,     trader);
+        FHE.allow(eTriggerPrice, trader);
         FHE.allow(eIsLong,       trader);
 
         orders[orderId] = Order({

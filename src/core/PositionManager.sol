@@ -47,6 +47,7 @@ contract PositionManager {
         euint128 collateral;
         euint128 entryPrice;
         euint128 entryFundingRateBiased; // stored as (rate + FUNDING_RATE_BIAS) — always positive
+        euint128 eLeverage;              // encrypted leverage — needed for OI decrease on close/liquidation
         ebool isLong;
         bool exists;
         uint256 leverage;
@@ -233,11 +234,14 @@ NOTE on OI tracking: funding rate open-interest is incremented by `leverage` as 
         FHE.allow(eSize,          address(this));
         FHE.allow(ePrice,         address(this));
         FHE.allow(eIsLong,        address(this));
-        
+        FHE.allow(eLeverage128,   address(this));
+
         // Ensure FHE limit orders can safely pass their handles without double-allowing
         // We do not re-allow if they already have access from OrderManager
         FHE.allow(eSize,          trader);
         FHE.allow(eCollateral128, trader);
+        FHE.allow(ePrice,         trader);
+        FHE.allow(eLeverage128,   trader);
         FHE.allow(eIsLong,        trader);
 
         // Get encrypted funding rate directly
@@ -255,6 +259,7 @@ NOTE on OI tracking: funding rate open-interest is incremented by `leverage` as 
             collateral:             eCollateral128,
             entryPrice:             ePrice,
             entryFundingRateBiased: eFundingRate,
+            eLeverage:              eLeverage128,
             isLong:                 eIsLong,
             exists:                 true,
             leverage:               0 // Plaintext leverage unavailable in fully encrypted FHE mode
@@ -351,9 +356,10 @@ NOTE on OI tracking: funding rate open-interest is incremented by `leverage` as 
     FHE.allow(position.size, trader);
 
     // Allow the finalizer (off-chain Keeper Node.js) to decrypt for settlement
-    FHE.allow(eFinalAmount, finalizer);
-    FHE.allow(position.size, finalizer);
-    FHE.allow(position.isLong, finalizer);
+    FHE.allow(eFinalAmount,        finalizer);
+    FHE.allow(position.size,       finalizer);
+    FHE.allow(position.isLong,     finalizer);
+    FHE.allow(position.collateral, finalizer); // needed for profit/loss split in finalizeClosePosition
 
     emit CloseRequested(
         key,
@@ -365,18 +371,22 @@ NOTE on OI tracking: funding rate open-interest is incremented by `leverage` as 
 
 
 /// @notice Finalizes a previously requested close after the CoFHE Threshold Network decrypts the handles.
-/// @param positionKey       The position identifier (keccak256 nonce key or legacy isLong key).
-/// @param finalAmount       Decrypted settlement amount in collateral tokens.
+/// @param positionKey           The position identifier (keccak256 nonce key or legacy isLong key).
+/// @param finalAmount           Decrypted settlement amount in collateral tokens.
 /// @param finalAmountSignature  CoFHE proof publishing the finalAmount decrypt.
-/// @param sizePlain         Decrypted position size.
-/// @param sizeSignature     CoFHE proof publishing the size decrypt.
-/// @param isLongPlain       Decrypted direction (legacy param, deprecated).
+/// @param sizePlain             Decrypted position size.
+/// @param sizeSignature         CoFHE proof publishing the size decrypt.
+/// @param collateralPlain       Decrypted original collateral — used to split profit vs. returned collateral.
+/// @param collateralSignature   CoFHE proof for the collateral handle.
+/// @param isLongPlain           Decrypted direction (legacy param, deprecated).
 function finalizeClosePosition(
     bytes32 positionKey,
     uint256 finalAmount,
     bytes calldata finalAmountSignature,
     uint256 sizePlain,
     bytes calldata sizeSignature,
+    uint256 collateralPlain,
+    bytes calldata collateralSignature,
     bool isLongPlain
 ) external onlyFinalizer {
     bytes32 key = positionKey;
@@ -388,25 +398,31 @@ function finalizeClosePosition(
     euint128 eFinalAmount = pendingFinalAmount[key];
     require(euint128.unwrap(eFinalAmount) != bytes32(0), "close not requested");
 
-    ebool canLiquidateEnc = pendingCanLiquidate[key];
-    if (ebool.unwrap(canLiquidateEnc) != bytes32(0)) {
-        // Liquidation check was requested — verify it is not liquidatable before settling.
-        bytes memory emptySig = "";
-        FHE.publishDecryptResult(canLiquidateEnc, false, emptySig);
-        require(true, "position liquidatable"); // placeholder: always false in test env
+    // Verify all three Threshold Network proofs — reverts if any signature is invalid.
+    FHE.publishDecryptResult(eFinalAmount,      uint128(finalAmount),    finalAmountSignature);
+    FHE.publishDecryptResult(position.size,     uint128(sizePlain),      sizeSignature);
+    FHE.publishDecryptResult(position.collateral, uint128(collateralPlain), collateralSignature);
+
+    // Decrease open interest now that the position is closed (encrypted — no direction leak).
+    FHE.allowTransient(position.eLeverage, address(this));
+    FHE.allowTransient(position.isLong,    address(this));
+    fundingManagerFHE.decreaseOpenInterestFHE(token, position.eLeverage, position.isLong);
+
+    // Settle with vault — correctly split profit from returned collateral.
+    vault.releaseLiquidity(sizePlain);
+    if (finalAmount >= collateralPlain) {
+        // Position is profitable: return collateral + pay profit from pool.
+        uint256 profit = finalAmount - collateralPlain;
+        vault.payTrader(trader, profit, collateralPlain);
+    } else {
+        // Position is a loss: return whatever remains; pool keeps the difference.
+        vault.receiveLoss(collateralPlain - finalAmount);
+        vault.payTrader(trader, 0, finalAmount);
     }
 
-    FHE.publishDecryptResult(eFinalAmount, uint128(finalAmount), finalAmountSignature);
-    FHE.publishDecryptResult(position.size,  uint128(sizePlain),  sizeSignature);
-
-    // Settle with vault
-    vault.releaseLiquidity(sizePlain);
-    vault.payTrader(trader, 0, finalAmount);
-
-
     delete positions[key];
-    pendingFinalAmount[key]   = euint128.wrap(bytes32(0));
-    pendingCanLiquidate[key]  = ebool.wrap(bytes32(0));
+    pendingFinalAmount[key]  = euint128.wrap(bytes32(0));
+    pendingCanLiquidate[key] = ebool.wrap(bytes32(0));
 
     emit PositionClosed(key, trader);
     emit CloseFinalized(key, trader, euint128.unwrap(eFinalAmount));
@@ -596,16 +612,16 @@ function finalizeClosePosition(
 
         require(canLiquidatePlain, "not liquidatable");
 
+        // Decrease open interest (encrypted — does not leak direction).
+        FHE.allowTransient(position.eLeverage, address(this));
+        FHE.allowTransient(position.isLong,    address(this));
+        fundingManagerFHE.decreaseOpenInterestFHE(token, position.eLeverage, position.isLong);
+
         vault.releaseLiquidity(sizePlain);
 
         uint256 reward = (collateralPlain * 5) / 100;
         vault.receiveLoss(collateralPlain - reward);
         vault.payTrader(liquidator, 0, reward);
-
-        uint256 proxyOI = (fheRouter != address(0)) ? position.leverage : sizePlain;
-        if (fheRouter != address(0)) {
-            // FHE open interest decrease logic can be managed asynchronously by FHEFundingRateManager
-        }
 
         delete positions[key];
         pendingCanLiquidate[key] = ebool.wrap(bytes32(0));

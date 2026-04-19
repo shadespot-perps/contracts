@@ -449,7 +449,7 @@ contract FHEPoolTest is Test {
         vm.prank(trader);
         router.closePosition(lastPosId);
         // Finalize with proof (MockTaskManager accepts any signature).
-        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", true);
+        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true);
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -467,7 +467,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(lastPosId);
-        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", true);
+        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true);
 
         // Vault paid out COLLATERAL + PNL to trader.
         // Remaining vault balance = LP_SEED + COLLATERAL - (COLLATERAL + PNL) = LP_SEED - PNL
@@ -489,7 +489,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(lastPosId);
-        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", true);
+        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true);
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(
             fheToken.confidentialBalanceOf(trader)
@@ -506,7 +506,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(lastPosId);
-        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", true);
+        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL - PNL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true);
 
         // Vault received COLLATERAL on open, paid out (COLLATERAL - PNL) on close.
         // Net gain = PNL. Vault token balance = LP_SEED + PNL.
@@ -523,7 +523,7 @@ contract FHEPoolTest is Test {
 
         vm.prank(trader);
         router.closePosition(lastPosId);
-        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", true);
+        pm.finalizeClosePosition(lastPosId, uint256(COLLATERAL + PNL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true);
 
         assertFalse(pm.positionExists(lastPosId));
     }
