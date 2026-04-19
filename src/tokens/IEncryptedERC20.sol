@@ -5,13 +5,13 @@ import { euint64, InEuint64 } from "cofhe-contracts/FHE.sol";
 
 /**
  * @title IEncryptedERC20
- * @notice Subset of IFHERC20 (Fhenix confidential-contracts) that ShadeSpot Pool 2
+ * @notice Subset of IFHERC20 (Fhenix confidential-contracts) that ShadeSpot ShadeSpot
  *         contracts depend on.
  *
- * Key differences from a standard ERC-20:
+Encrypted ERC-20 operational model:
  *   - transfer / transferFrom / approve / allowance all REVERT — never call them.
  *   - Amounts are always euint64 ciphertexts; balances are encrypted on-chain.
- *   - Instead of approve, callers grant operators via setOperator(spender, untilTimestamp).
+ *   - Callers grant operators via setOperator(spender, untilTimestamp).
  *     FHERouter must be granted operator status by each user before trading.
  */
 interface IEncryptedERC20 {

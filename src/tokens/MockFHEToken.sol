@@ -5,15 +5,15 @@ import { FHERC20 } from "fhenix-confidential-contracts/FHERC20.sol";
 
 /**
  * @title MockFHEToken
- * @notice Concrete FHERC20 token used as collateral in Pool 2 (FHE token / ETH).
+ * @notice Concrete FHERC20 token used as collateral in ShadeSpot (Encrypted Protocol).
  *
- * Extends the Fhenix confidential-contracts FHERC20 base which:
+Extends the Fhenix confidential-contracts FHERC20 base which:
  *   - Stores per-address balances as `euint64` FHE ciphertexts.
  *   - Provides `confidentialTransfer` / `confidentialTransferFrom` instead of
  *     the standard ERC-20 transfer functions (those deliberately revert).
- *   - Uses an operator model (setOperator) instead of approve/allowance.
+ *   - Uses an operator model (setOperator) securely.
  *
- * In Foundry tests, etch MockTaskManager at TASK_MANAGER_ADDRESS in setUp so all
+In Foundry tests, etch MockTaskManager at TASK_MANAGER_ADDRESS in setUp so all
  * FHE operations execute synchronously with plaintext-as-handle semantics.
  */
 contract MockFHEToken is FHERC20 {

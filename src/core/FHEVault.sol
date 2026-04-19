@@ -3,33 +3,47 @@ pragma solidity ^0.8.25;
 
 import "./IVault.sol";
 import "../tokens/IEncryptedERC20.sol";
-import { FHE, euint64, ebool } from "cofhe-contracts/FHE.sol";
-import {ITaskManager} from "cofhe-contracts/ICofhe.sol";
+import { FHE, euint64, euint128, ebool } from "cofhe-contracts/FHE.sol";
 
 /**
  * @title FHEVault
- * @notice Pool 2 vault — collateral is a Fhenix FHERC20 token (euint64 encrypted balances).
+ * @notice ShadeSpot vault — collateral is a Fhenix FHERC20 token (euint64 encrypted balances).
  *
- * Privacy properties:
- *   - totalLiquidity and totalReserved are stored as euint64 ciphertexts.
- *   - LP balances (lpBalance) are stored as euint64 ciphertexts.
- *   - On-chain observers cannot read pool depth or any LP's share.
+Privacy properties:
+ *   - totalLiquidity, totalReserved, encryptedTotalSupply and every LP balance
+ *     are stored as euint64 ciphertexts — pool depth, open interest, and all
+ *     LP share holdings are unreadable on-chain.
+ *   - All events that reference amounts emit ciphertext handles (bytes32) so
+ *     on-chain observers see only opaque values; authorised parties decrypt
+ *     client-side via the CoFHE SDK.
  *
- * Token interface:
- *   - Uses FHERC20's confidentialTransfer / confidentialTransferFrom.
- *   - Standard transfer / transferFrom / approve on FHERC20 deliberately revert —
- *     this vault never calls those.
- *   - Payouts to traders and LPs go via confidentialTransfer (vault is msg.sender,
- *     so it is always authorised to spend its own balance).
+Yield distribution (mirrors Vault proportional-share model, fully in FHE):
+ *   - deposit:  shares = (amount * encryptedTotalSupply) / totalLiquidity
+ *   - withdraw: amount = (shares * totalLiquidity) / encryptedTotalSupply
+ *   - As traders lose (receiveLoss grows totalLiquidity), each share redeems
+ *     for more collateral — identical economics to Vault but with encrypted state.
  *
- * Operator setup (done once per user, off-chain before first trade):
+NOTE on overflow: FHE.mul operates on euint64 (max ~1.8 × 10^19).
+ *   The product (amount × totalSupply) or (shares × totalLiquidity) must not
+ *   exceed this bound. Use tokens with ≤ 6 decimals or enforce deposit caps.
+ *
+Three-phase pattern for openPosition:
+ *   1. submitReserveLiquidityCheck   — compute FHE check, emit handle
+ *   2. storeReserveLiquidityProof    — off-chain decrypt → publishDecryptResult, store approval
+ *   3. reserveLiquidity(trader)      — consume approval, update encrypted state
+ *
+Two-phase pattern for removeLiquidity:
+ *   1. submitWithdrawCheck  — compute FHE checks, emit handles
+ *   2. withdrawWithProof    — off-chain decrypt → publishDecryptResult, execute transfer
+ *
+releaseLiquidity and payTrader are called from PositionManager.finalizeClosePosition /
+ * finalizeLiquidation where amounts are finalized verified values via publishDecryptResult.
+ * They update encrypted state directly without further decrypt steps.
+ *
+Operator setup (done once per user, off-chain before first trade):
  *   fheToken.setOperator(address(fheRouter), untilTimestamp)
- *
- * Implements IVault so PositionManager can use it interchangeably with Vault.
  */
 contract FHEVault is IVault {
-    // Must match the address used by cofhe-contracts' `FHE.sol` in this repo.
-    address private constant TASK_MANAGER = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
 
     IEncryptedERC20 public immutable collateralToken;
 
@@ -37,21 +51,69 @@ contract FHEVault is IVault {
     address public router;
     address public owner;
 
-    // Encrypted accounting — ciphertext handles, not readable on-chain
     euint64 public totalLiquidity;
     euint64 public totalReserved;
+
+    // Encrypted LP share accounting
+    euint64 public encryptedTotalSupply;
     mapping(address => euint64) public lpBalance;
 
-    // Two-phase decrypt: trader → pending hasLiq ebool submitted in a prior
-    // successful tx so the CoFHE dispatcher can see and process the TaskCreated event.
-    mapping(address => ebool) public pendingLiqCheck;
+    // Plaintext sentinel — only reveals that the first deposit occurred (amount stays hidden)
+    bool public initialized;
 
-    event Deposit(address indexed user, uint256 amount);
-    event Withdraw(address indexed user, uint256 amount);
-    event IncreaseReserved(uint256 amount);
+    // Phase 1: open position — stores the FHE check handle and the encrypted size it was
+    // computed for. The size is kept encrypted so PositionManager never sees it as plaintext.
+    struct PendingLiqCheck {
+        ebool   hasLiq;
+        euint64 eSize; // collateral * leverage, encrypted
+    }
+    mapping(address => PendingLiqCheck) public pendingLiqCheck;
+
+    // Phase 1.5: after publishDecryptResult verifies the proof, the approved encrypted size
+    // is stored here. Consumed (deleted) atomically in reserveLiquidity.
+    mapping(address => bool)    private _liqApproved;
+    mapping(address => euint64) private _liqApprovedSize; // encrypted size, no plaintext
+
+    // Phase 1: withdraw
+    struct PendingWithdraw {
+        ebool   hasBal;
+        ebool   hasLiq;
+        euint64 eAmount;
+        uint256 shares;
+    }
+    mapping(address => PendingWithdraw) public pendingWithdraw;
+
+    // ---------------------------------------------------------------------------
+    // EVENTS — all amounts are ciphertext handles (bytes32) so observers cannot
+    //          read values; authorised parties decrypt client-side via CoFHE SDK.
+    // ---------------------------------------------------------------------------
+
+    event Deposit(address indexed user, bytes32 amountHandle);
+    event Withdraw(address indexed user, bytes32 amountHandle);
+
+    /// @dev Emitted from reserveLiquidity; handle is the encrypted size reserved.
+    event IncreaseReserved(bytes32 sizeHandle);
+    /// @dev Emitted from releaseLiquidity; plaintext amount (already public at this stage
+    ///      because it came from a publishDecryptResult in PositionManager).
     event DecreaseReserved(uint256 amount);
-    event PayOut(address indexed user, uint256 amount);
-    event ReceiveLoss(uint256 amount);
+
+    /// @dev Payout handle — authorised party (trader) decrypts client-side.
+    event PayOut(address indexed user, bytes32 payoutHandle);
+    /// @dev Loss handle — pool delta, decryptable by vault owner for accounting.
+    event ReceiveLoss(bytes32 amountHandle);
+
+    // Off-chain clients watch these to discover handles for decryption.
+    event ReserveLiquidityCheckSubmitted(
+        address indexed trader,
+        bytes32 hasLiqHandle,
+        bytes32 sizeHandle    // encrypted size (collateral*leverage)
+    );
+    event WithdrawCheckSubmitted(
+        address indexed lp,
+        bytes32 hasBalHandle,
+        bytes32 hasLiqHandle,
+        uint256 shares
+    );
 
     modifier onlyPositionManager() {
         require(msg.sender == positionManager, "Not position manager");
@@ -88,63 +150,131 @@ contract FHEVault is IVault {
     // --------------------------------------------------------
 
     /**
-     * @notice Record an LP deposit. The Router must call
-     *         fheToken.confidentialTransferFrom(lp, vault, eAmount) BEFORE
-     *         calling this — so tokens are already in the vault.
-     * @param amount Plaintext deposit amount (LP knows their own amount).
+     * @notice Record an LP deposit with proportional share issuance (fully encrypted).
+     *         The Router must call confidentialTransferFrom(lp, vault, eAmount) BEFORE
+     *         calling this so tokens are already in the vault.
+     * @param lp      LP address.
+     * @param eAmount Encrypted deposit amount (euint64).
      */
-    function deposit(uint256 amount) external onlyRouter {
-        require(amount > 0, "Invalid amount");
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
-        lpBalance[msg.sender] = FHE.add(lpBalance[msg.sender], eAmount);
-        totalLiquidity        = FHE.add(totalLiquidity, eAmount);
+    function deposit(address lp, euint64 eAmount) external onlyRouter {
+        euint64 shares;
 
-        // CoFHE ACL: persistently allow this vault to use updated stored handles.
-        FHE.allow(lpBalance[msg.sender], address(this));
-        FHE.allow(totalLiquidity, address(this));
-        emit Deposit(msg.sender, amount);
+        if (!initialized) {
+            // First deposit: 1:1 to avoid division by zero on encryptedTotalSupply
+            shares = eAmount;
+            initialized = true;
+        } else {
+            // shares = (amount * encryptedTotalSupply) / totalLiquidity
+            shares = FHE.div(FHE.mul(eAmount, encryptedTotalSupply), totalLiquidity);
+        }
+
+        lpBalance[lp]         = FHE.add(lpBalance[lp], shares);
+        encryptedTotalSupply   = FHE.add(encryptedTotalSupply, shares);
+        totalLiquidity         = FHE.add(totalLiquidity, eAmount);
+
+        FHE.allow(lpBalance[lp],       address(this));
+        FHE.allow(encryptedTotalSupply, address(this));
+        FHE.allow(totalLiquidity,       address(this));
+
+        // Enable LP to use EIP-712 permits to fetch their balance in the UI
+        FHE.allow(lpBalance[lp],       lp);
+
+        emit Deposit(lp, euint64.unwrap(eAmount));
+    }
+
+    // IVault.deposit stub — FHEVault uses deposit(address, euint64) instead.
+    function deposit(address, uint256) external pure override {
+        revert("FHEVault: use deposit(address,euint64)");
     }
 
     /**
-     * @notice Withdraw LP liquidity. Performs encrypted balance checks,
-     *         decrypting only one bit each, then pays via confidentialTransfer.
+     * @notice Phase 1 of withdraw: compute encrypted balance and liquidity checks, store
+     *         handles, and allow this contract to publishDecryptResult in Phase 2.
+     *         Off-chain: decrypt the emitted handles, then call withdrawWithProof.
+     * @param lp     LP address.
+     * @param shares Standard share amount to redeem.
      */
-    function withdraw(uint256 amount) external onlyRouter {
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
+    function submitWithdrawCheck(address lp, uint256 shares) external onlyRouter {
+        require(shares > 0, "Invalid shares");
+        euint64 eShares = FHE.asEuint64(uint64(shares));
 
-        // Encrypted check: LP has enough balance
-        ebool hasBal = FHE.gte(lpBalance[msg.sender], eAmount);
-        FHE.allowTransient(hasBal, address(this));
-        (bool balOk, bool decBal) = FHE.getDecryptResultSafe(hasBal);
-        if (!decBal) {
-            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasBal)), msg.sender);
-            revert("decrypt not ready");
-        }
-        require(balOk, "Insufficient balance");
+        // Encrypted balance check
+        ebool hasBal = FHE.gte(lpBalance[lp], eShares);
 
-        // Encrypted check: enough free liquidity
+        // amount = (shares * totalLiquidity) / encryptedTotalSupply
+        euint64 eAmount = FHE.div(FHE.mul(eShares, totalLiquidity), encryptedTotalSupply);
+
+        // Encrypted liquidity check
         euint64 eAvail = FHE.sub(totalLiquidity, totalReserved);
-        ebool hasLiq = FHE.gte(eAvail, eAmount);
-        FHE.allowTransient(hasLiq, address(this));
-        (bool liqOk, bool decLiq) = FHE.getDecryptResultSafe(hasLiq);
-        if (!decLiq) {
-            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), msg.sender);
-            revert("decrypt not ready");
-        }
-        require(liqOk, "Liquidity locked");
+        ebool   hasLiq = FHE.gte(eAvail, eAmount);
 
-        lpBalance[msg.sender] = FHE.sub(lpBalance[msg.sender], eAmount);
+        // Allow this contract to publishDecryptResult in Phase 2.
+        // Allow the LP to decrypt both check handles via a self-permit.
+        FHE.allow(hasBal,  address(this));
+        FHE.allow(hasBal,  lp);
+        FHE.allow(eAmount, address(this));
+        FHE.allow(hasLiq,  address(this));
+        FHE.allow(hasLiq,  lp);
+
+        pendingWithdraw[lp] = PendingWithdraw(hasBal, hasLiq, eAmount, shares);
+
+        emit WithdrawCheckSubmitted(lp, ebool.unwrap(hasBal), ebool.unwrap(hasLiq), shares);
+    }
+
+    /**
+     * @notice Phase 2 of withdraw: verify CoFHE decrypt proofs and execute the withdrawal.
+     *         Payout amount is transferred as an encrypted euint64 — the exact amount
+     *         is never exposed on-chain.
+     * @param lp       LP redeeming shares.
+     * @param shares   Must match the value submitted in submitWithdrawCheck.
+     * @param balPlain Decrypted balance-check boolean from the Threshold Network.
+     * @param balSig   Threshold Network signature for hasBal.
+     * @param liqPlain Decrypted liquidity-check boolean from the Threshold Network.
+     * @param liqSig   Threshold Network signature for hasLiq.
+     * @return amountHandle The euint64 handle of the withdrawn amount (bytes32);
+     *         callers emit this in the RemoveLiquidity event.
+     */
+    function withdrawWithProof(
+        address lp,
+        uint256 shares,
+        bool    balPlain,
+        bytes calldata balSig,
+        bool    liqPlain,
+        bytes calldata liqSig
+    ) external onlyRouter returns (bytes32 amountHandle) {
+        PendingWithdraw storage pw = pendingWithdraw[lp];
+        require(pw.shares == shares && pw.shares > 0, "No pending withdraw or shares mismatch");
+
+        // Verify Threshold Network proofs without publishing the booleans globally on-chain.
+        require(FHE.verifyDecryptResult(pw.hasBal, balPlain, balSig), "Invalid bal decrypt");
+        require(balPlain, "Insufficient shares");
+
+        require(FHE.verifyDecryptResult(pw.hasLiq, liqPlain, liqSig), "Invalid liq decrypt");
+        require(liqPlain, "Liquidity locked");
+
+        euint64 eAmount = pw.eAmount;
+        euint64 eShares = FHE.asEuint64(uint64(shares));
+        delete pendingWithdraw[lp];
+
+        lpBalance[lp]        = FHE.sub(lpBalance[lp], eShares);
+        encryptedTotalSupply  = FHE.sub(encryptedTotalSupply, eShares);
         totalLiquidity        = FHE.sub(totalLiquidity, eAmount);
 
-        // CoFHE ACL: allow updated stored handles.
-        FHE.allow(lpBalance[msg.sender], address(this));
-        FHE.allow(totalLiquidity, address(this));
+        FHE.allow(lpBalance[lp],       address(this));
+        FHE.allow(encryptedTotalSupply, address(this));
+        FHE.allow(totalLiquidity,       address(this));
+        FHE.allow(eAmount,              address(collateralToken));
+        FHE.allow(eAmount,              lp); // LP can verify their payout client-side
 
-        // Vault is msg.sender on the token — always authorised to spend its balance
-        FHE.allow(eAmount, address(collateralToken));
-        collateralToken.confidentialTransfer(msg.sender, eAmount);
+        collateralToken.confidentialTransfer(lp, eAmount);
 
-        emit Withdraw(msg.sender, amount);
+        amountHandle = euint64.unwrap(eAmount);
+        emit Withdraw(lp, amountHandle);
+    }
+
+    // IVault.withdraw stub — FHEVault uses withdrawWithProof instead.
+    function withdraw(address, uint256) external pure override returns (uint256) {
+        revert("FHEVault: use withdrawWithProof");
     }
 
     // --------------------------------------------------------
@@ -152,115 +282,135 @@ contract FHEVault is IVault {
     // --------------------------------------------------------
 
     /**
-     * @notice Phase 1 of the two-phase open: compute the encrypted liquidity
-     *         comparison and register a decrypt task that will be committed
-     *         on-chain so the CoFHE dispatcher can pick it up.
-     *
-     *         Call this from the router BEFORE calling openPosition.  The tx
-     *         succeeds (no revert), so the TaskCreated event lands in the chain
-     *         and the dispatcher processes it.  After the dispatcher publishes
-     *         the result, reserveLiquidity will find it immediately.
-     *
-     * @param trader  The trader whose pending check to store.
-     * @param amount  The reserve amount (same value passed to reserveLiquidity).
+     * @notice Phase 1: compute the encrypted availability check for a new position and
+     *         store the handle so the off-chain client can decrypt and provide a proof.
+     *         Emit both the check handle and the encrypted size handle for keepers/clients.
+     *         Off-chain: decrypt handle, obtain (bool plain, bytes sig), call storeReserveLiquidityProof.
+     * @param trader Address for whom the check is computed.
+     * @param eSize  Encrypted position size (collateral * leverage) (remains fully encrypted).
      */
-    function submitReserveLiquidityCheck(address trader, uint256 amount) external onlyRouter {
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
+    function submitReserveLiquidityCheck(address trader, euint64 eSize) external onlyRouter {
         euint64 eAvail  = FHE.sub(totalLiquidity, totalReserved);
-        ebool hasLiq    = FHE.gte(eAvail, eAmount);
-        // Persistent allow so reserveLiquidity (and the dispatcher) can use this handle.
+        ebool   hasLiq  = FHE.gte(eAvail, eSize);
+
+        // Allow this contract to publishDecryptResult in Phase 1.5.
+        // Allow the trader to decrypt hasLiq via a self-permit (withPermit route).
         FHE.allow(hasLiq, address(this));
-        pendingLiqCheck[trader] = hasLiq;
-        // createDecryptTask succeeds here — this tx doesn't revert.
-        ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), address(this));
+        FHE.allow(hasLiq, trader);
+        FHE.allow(eSize,  address(this));
+
+        pendingLiqCheck[trader] = PendingLiqCheck(hasLiq, eSize);
+
+        emit ReserveLiquidityCheckSubmitted(
+            trader,
+            ebool.unwrap(hasLiq),
+            euint64.unwrap(eSize)  // ciphertext handle — no plaintext
+        );
     }
 
-    function reserveLiquidity(uint256 amount, address trader) external onlyPositionManager {
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
-        ebool hasLiq;
+    /**
+     * @notice Phase 1.5: verify the off-chain decrypt proof and store the approved size.
+     *         Must be called (by the router) before the router calls positionManager.openPosition.
+     * @param trader      Trader address (must match the key used in submitReserveLiquidityCheck).
+     * @param hasLiqPlain Decrypted boolean from the Threshold Network.
+     * @param hasLiqSig   Threshold Network signature for the hasLiq handle.
+     */
+    function storeReserveLiquidityProof(
+        address trader,
+        bool    hasLiqPlain,
+        bytes calldata hasLiqSig
+    ) external onlyRouter {
+        PendingLiqCheck storage plc = pendingLiqCheck[trader];
+        require(ebool.unwrap(plc.hasLiq) != bytes32(0), "no pending check");
 
-        ebool pending = pendingLiqCheck[trader];
-        if (ebool.unwrap(pending) != bytes32(0)) {
-            // Use the pre-submitted handle (result already requested from dispatcher).
-            hasLiq = pending;
-            pendingLiqCheck[trader] = ebool.wrap(bytes32(0));
-        } else {
-            // Fallback: submit inline (reverts — kept for backward compatibility).
-            euint64 eAvail = FHE.sub(totalLiquidity, totalReserved);
-            hasLiq = FHE.gte(eAvail, eAmount);
-            FHE.allowTransient(hasLiq, address(this));
-        }
+        // Verifies the Threshold Network proof on-chain without publishing the boolean globally.
+        require(FHE.verifyDecryptResult(plc.hasLiq, hasLiqPlain, hasLiqSig), "Invalid hasLiq decrypt");
 
-        (bool ok, bool decOk) = FHE.getDecryptResultSafe(hasLiq);
-        if (!decOk) {
-            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(hasLiq)), address(this));
-            revert("decrypt not ready");
-        }
-        require(ok, "Insufficient vault liquidity");
+        // Store encrypted size; no plaintext ever written here.
+        _liqApproved[trader]      = hasLiqPlain;
+        _liqApprovedSize[trader]  = plc.eSize;
+        FHE.allow(plc.eSize, address(this));
+        delete pendingLiqCheck[trader];
+    }
 
-        totalReserved = FHE.add(totalReserved, eAmount);
+    /**
+     * @notice Called by PositionManager.openPosition — consumes the pre-verified approval.
+     *         The approval was set by storeReserveLiquidityProof with a valid Threshold Network proof.
+     *         the vault reads its internally stored euint64.
+     */
+    function reserveLiquidity(address trader) external onlyPositionManager {
+        require(_liqApproved[trader], "Insufficient vault liquidity");
+        euint64 eSize = _liqApprovedSize[trader];
+        delete _liqApproved[trader];
+        _liqApprovedSize[trader] = euint64.wrap(bytes32(0));
+
+        totalReserved = FHE.add(totalReserved, eSize);
         FHE.allow(totalReserved, address(this));
-        emit IncreaseReserved(amount);
+
+        emit IncreaseReserved(euint64.unwrap(eSize));
     }
 
+    /**
+     * @notice Release reserved liquidity after a position is closed or liquidated.
+     *         `amount` is a verified decrypted value from publishDecryptResult in
+     *         PositionManager.finalizeClosePosition / finalizeLiquidation.
+     *         The invariant totalReserved >= amount is maintained by the protocol.
+     */
     function releaseLiquidity(uint256 amount) external onlyPositionManager {
         euint64 eAmount = FHE.asEuint64(uint64(amount));
-
-        ebool ok = FHE.gte(totalReserved, eAmount);
-        FHE.allowTransient(ok, address(this));
-        (bool valid, bool decOk) = FHE.getDecryptResultSafe(ok);
-        if (!decOk) {
-            ITaskManager(TASK_MANAGER).createDecryptTask(uint256(ebool.unwrap(ok)), msg.sender);
-            revert("decrypt not ready");
-        }
-        require(valid, "Invalid release");
-
         totalReserved = FHE.sub(totalReserved, eAmount);
         FHE.allow(totalReserved, address(this));
+        // amount is already public at this stage (came via publishDecryptResult)
         emit DecreaseReserved(amount);
     }
 
+    /**
+     * @notice Pay out a trader's settlement amount (profit + returned collateral).
+     *         Both values are finalized verified values from publishDecryptResult in the
+     *         PositionManager finalize step — no additional FHE cap is needed.
+     */
     function payTrader(address user, uint256 profit, uint256 returnedCollateral)
         external
         onlyPositionManager
     {
-        uint256 actualProfit = profit;
+        uint256 total = profit + returnedCollateral;
 
         if (profit > 0) {
-            euint64 eProfit = FHE.asEuint64(uint64(profit));
-            euint64 eAvail  = FHE.sub(totalLiquidity, totalReserved);
-
-            // Cap profit at available liquidity (encrypted select, then decrypt result)
-            euint64 eActual = FHE.select(FHE.gt(eProfit, eAvail), eAvail, eProfit);
-            FHE.allowTransient(eActual, address(this));
-            (uint64 decProfit, bool decOk) = FHE.getDecryptResultSafe(eActual);
-            if (!decOk) {
-                ITaskManager(TASK_MANAGER).createDecryptTask(uint256(euint64.unwrap(eActual)), user);
-                revert("decrypt not ready");
-            }
-
-            actualProfit   = uint256(decProfit);
-            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(actualProfit)));
+            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(profit)));
+            FHE.allow(totalLiquidity, address(this));
+        }
+        if (returnedCollateral > 0) {
+            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(returnedCollateral)));
             FHE.allow(totalLiquidity, address(this));
         }
 
-        uint256 payout = actualProfit + returnedCollateral;
-        euint64 ePayout = FHE.asEuint64(uint64(payout));
+        euint64 ePayout = FHE.asEuint64(uint64(total));
         FHE.allow(ePayout, address(collateralToken));
+        FHE.allow(ePayout, user); // trader can verify their payout client-side
         collateralToken.confidentialTransfer(user, ePayout);
 
-        emit PayOut(user, payout);
+        emit PayOut(user, euint64.unwrap(ePayout));
     }
 
     function receiveLoss(uint256 amount) external onlyPositionManager {
-        totalLiquidity = FHE.add(totalLiquidity, FHE.asEuint64(uint64(amount)));
+        euint64 eAmount = FHE.asEuint64(uint64(amount));
+        totalLiquidity = FHE.add(totalLiquidity, eAmount);
         FHE.allow(totalLiquidity, address(this));
-        emit ReceiveLoss(amount);
+        emit ReceiveLoss(euint64.unwrap(eAmount));
     }
 
-    function refundCollateral(address user, uint256 amount) external onlyRouter {
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
+    /**
+     * @notice Refund collateral to a user (e.g. on order cancellation).
+     * @param eAmount Encrypted refund amount.
+     */
+    function refundCollateral(address user, euint64 eAmount) external onlyRouter {
         FHE.allow(eAmount, address(collateralToken));
+        FHE.allow(eAmount, user);
         collateralToken.confidentialTransfer(user, eAmount);
+    }
+
+    // IVault.refundCollateral stub — FHEVault uses refundCollateral(address, euint64).
+    function refundCollateral(address, uint256) external pure override {
+        revert("FHEVault: use refundCollateral(address,euint64)");
     }
 }
