@@ -35,8 +35,8 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
        │              │                │                  │
        ▼              ▼                ▼                  ▼
 ┌────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ FHEVault   │  │PositionManager│ |FHEOrderManag │  │FHEFunding    │
-│            │  │              │  │  er          │  │RateManager   │
+│ FHEVault   │  │PositionManage│  |FHEOrderManag │  │FHEFunding    │
+│            │  │r             │  │  er          │  │RateManager   │
 │euint64     │  │euint128 size │  │euint128      │  │euint128      │
 │totalLiq    │  │euint128 coll │  │triggerPrice  │  │eLongOI       │
 │totalReserve│  │euint128 entry│  │euint64 coll  │  │eShortOI      │
