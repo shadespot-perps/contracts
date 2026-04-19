@@ -12,3 +12,9 @@ out/
 
 # Dotenv file
 .env
+
+./cofhe-local
+
+./github
+
+broadcast/

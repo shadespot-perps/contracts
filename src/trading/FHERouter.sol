@@ -1,32 +1,42 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
+import "../core/FHEFundingRateManager.sol";
 import "../core/PositionManager.sol";
 import "../core/FHEVault.sol";
-import "../core/FundingRateManager.sol";
-import "./OrderManager.sol";
+import "./FHEOrderManager.sol";
 import "../tokens/IEncryptedERC20.sol";
-import { FHE, euint64 } from "cofhe-contracts/FHE.sol";
+import { FHE, euint64, euint128, ebool, InEbool, InEuint64, InEuint128 } from "cofhe-contracts/FHE.sol";
 
 /**
  * @title FHERouter
- * @notice Pool 2 entry point — collateral is a Fhenix FHERC20 token.
+ * @notice ShadeSpot protocol entry point — collateral is a Fhenix FHERC20 token.
  *
- * Key differences from Router (Pool 1):
- *   - collateralToken is IEncryptedERC20 (Fhenix FHERC20 with encrypted balances).
- *   - Token transfers use confidentialTransferFrom instead of transferFrom.
- *   - Instead of approve, users must call:
- *       fheToken.setOperator(address(fheRouter), untilTimestamp)
- *     once before their first trade or liquidity deposit.
- *   - vault is FHEVault (LP balances and pool counters stored as euint64 ciphertexts).
- *   - indexToken is enforced — only ETH positions are accepted.
+* Open-position flow (three-phase):
+ *   1. submitDecryptTaskForOpen(token, encCollateral, leverage)
+ *      — computes FHE liquidity check; emits handle for off-chain decrypt.
+ *   2. Off-chain: decrypt handle → (hasLiqPlain, hasLiqSig) via CoFHE SDK.
+ *   3. openPosition(token, encCollateral, leverage, isLong, hasLiqPlain, hasLiqSig)
+ *      — verifies proof, moves collateral, opens position.
+ *
+Remove-liquidity flow (two-phase):
+ *   1. submitWithdrawCheck(shares)      — computes FHE checks; emits handles.
+ *   2. Off-chain: decrypt handles.
+ *   3. removeLiquidity(shares, balPlain, balSig, liqPlain, liqSig)
+ *      — verifies proofs, executes encrypted transfer.
+ *
+Limit-order execution flow (four-phase, keeper):
+ *   1. submitDecryptTaskForOrder(orderId) — submits BOTH liquidity and price checks; emits handles.
+ *   2. Off-chain: decrypt both handles.
+ *   3. storeOrderLiquidityProof(orderId, hasLiqPlain, hasLiqSig) — verifies liq proof.
+ *   4. executeOrder(orderId, shouldExecPlain, shouldExecSig, hasLiqPlain, hasLiqSig) — opens position.
  */
 contract FHERouter {
 
     PositionManager    public positionManager;
     FHEVault           public vault;
-    OrderManager       public orderManager;
-    FundingRateManager public fundingManager;
+    FHEOrderManager    public orderManager;
+    
 
     IEncryptedERC20 public collateralToken;
 
@@ -34,23 +44,15 @@ contract FHERouter {
     address public immutable indexToken;
 
     address public owner;
+    FHEFundingRateManager public fheFundingManager;
     /// @notice ETH fee required for each trading action (open, close, order, liquidate).
     uint256 public actionFee;
     uint256 public collectedFees;
 
-    event OpenPosition(
-        address indexed trader,
-        address token,
-        uint256 collateral,
-        uint256 leverage,
-        bool isLong
-    );
-
-    event ClosePosition(
-        address indexed trader,
-        address token,
-        bool isLong
-    );
+    // positionKey lets the frontend correlate with PositionManager events.
+    // No trade parameters emitted — details are in the encrypted PositionOpened event.
+    event OpenPosition(bytes32 indexed positionKey, address indexed trader);
+    event ClosePosition(bytes32 indexed positionKey, address indexed trader);
 
     event OrderCreated(
         address indexed trader,
@@ -59,8 +61,10 @@ contract FHERouter {
 
     event OrderExecuted(uint256 orderId);
 
-    event AddLiquidity(address indexed user, uint256 amount);
-    event RemoveLiquidity(address indexed user, uint256 amount);
+    /// @notice amount field is a ciphertext handle (euint64.unwrap) — decrypt via CoFHE SDK.
+    event AddLiquidity(address indexed user, bytes32 amountHandle);
+    /// @notice amount field is the ciphertext handle of the payout — decrypt via CoFHE SDK.
+    event RemoveLiquidity(address indexed user, bytes32 amountHandle);
 
     event ActionFeeSet(uint256 newFee);
     event FeesWithdrawn(address indexed recipient, uint256 amount);
@@ -80,15 +84,15 @@ contract FHERouter {
         address _positionManager,
         address _vault,
         address _orderManager,
-        address _fundingManager,
+        address _fheFunding,
         address _collateralToken,
         address _indexToken
     ) {
         require(_indexToken != address(0), "invalid index token");
         positionManager = PositionManager(_positionManager);
         vault           = FHEVault(_vault);
-        orderManager    = OrderManager(_orderManager);
-        fundingManager  = FundingRateManager(_fundingManager);
+        orderManager    = FHEOrderManager(_orderManager);
+        fheFundingManager = FHEFundingRateManager(_fheFunding);
         collateralToken = IEncryptedERC20(_collateralToken);
         indexToken      = _indexToken;
         owner           = msg.sender;
@@ -112,61 +116,91 @@ contract FHERouter {
     // -------------------------------------------------
 
     /**
-     * @notice Phase 1 — submit the encrypted liquidity-check decrypt task so
-     *         the CoFHE dispatcher can process it in a committed transaction.
-     *
-     *         Call this once before openPosition and wait for the dispatcher to
-     *         publish the result (~15–30 s on live CoFHE networks).  openPosition
-     *         will then find the pending result and succeed without reverting.
-     *
-     * @param token      Index token (must equal indexToken).
-     * @param collateral Collateral amount (same value used in openPosition).
-     * @param leverage   Leverage multiplier (same value used in openPosition).
+     * @notice Phase 1 — submit the encrypted liquidity-check task so the CoFHE network
+     *         can decrypt the result. Call this once, wait for the off-chain decrypt
+     *         (~15–30 s on live CoFHE networks), then call openPosition with the proof.
+ *
+@param token         Index token (must equal indexToken).
+     * @param encCollateral Encrypted collateral (InEuint64).
+     * @param encLeverage   Encrypted leverage (InEuint64).
+     * @param encIsLong     Encrypted direction (InEbool).
      */
     function submitDecryptTaskForOpen(
-        address token,
-        uint256 collateral,
-        uint256 leverage
+        address    token,
+        InEuint64  calldata encCollateral,
+        InEuint64  calldata encLeverage,
+        InEbool    calldata encIsLong
     ) external {
         require(token == indexToken, "unsupported index token");
-        vault.submitReserveLiquidityCheck(msg.sender, collateral * leverage);
+
+        fheFundingManager.updateFunding(token);
+
+        // Unwrap the user-encrypted collateral into a usable euint64 handle.
+        euint64 eCollateral = FHE.asEuint64(encCollateral);
+        // Compute encrypted size = collateral * leverage (stays in FHE domain).
+        euint64 eLeverage = FHE.asEuint64(encLeverage);
+        euint64 eSize = FHE.mul(eCollateral, eLeverage);
+        FHE.allow(eSize, address(vault));
+
+        vault.submitReserveLiquidityCheck(msg.sender, eSize);
     }
 
     /**
-     * @notice Open a leveraged position using FHE token as collateral.
-     * @dev Caller must have granted this router operator status on the FHE token:
+     * @notice open a leveraged position using FHE token as collateral.
+     *         Requires a prior submitDecryptTaskForOpen call and off-chain decrypt.
+ *
+@param token         Index token (must equal indexToken).
+     * @param encCollateral Encrypted collateral — must be the same encrypted value used in
+     *                      submitDecryptTaskForOpen (same ciphertext, re-submitted).
+     * @param encLeverage   Encrypted leverage.
+     * @param encIsLong     Encrypted direction.
+     * @param hasLiqPlain   Decrypted liquidity-check boolean from the Threshold Network.
+     * @param hasLiqSig     Threshold Network signature for the hasLiq handle.
+ *
+@dev Caller must have granted this router operator status on the FHE token:
      *      fheToken.setOperator(address(fheRouter), untilTimestamp)
      */
     function openPosition(
-        address token,
-        uint256 collateral,
-        uint256 leverage,
-        bool isLong
-    ) external payable requireFee {
-        require(collateral > 0, "invalid collateral");
-        require(collateral <= type(uint64).max, "collateral exceeds uint64 max");
+        address    token,
+        InEuint64  calldata encCollateral,
+        InEuint64  calldata encLeverage,
+        InEbool    calldata encIsLong,
+        bool       hasLiqPlain,
+        bytes calldata hasLiqSig
+    ) external payable requireFee returns (bytes32 positionId) {
         require(token == indexToken, "unsupported index token");
 
-        fundingManager.updateFunding(token);
+        fheFundingManager.updateFunding(token);
 
-        // Confidential transfer: router (operator) moves collateral from trader → vault
-        euint64 eCollateral = FHE.asEuint64(uint64(collateral));
+
+        // Verify the CoFHE decrypt proof before moving any funds.
+        vault.storeReserveLiquidityProof(msg.sender, hasLiqPlain, hasLiqSig);
+
+        // Unwrap encrypted collateral and allow relevant contracts to use the handle.
+        euint64 eCollateral = FHE.asEuint64(encCollateral);
         FHE.allow(eCollateral, address(collateralToken));
+        FHE.allow(eCollateral, address(positionManager));
+        FHE.allow(eCollateral, msg.sender); // trader can verify their own collateral
+
+        // Confidential transfer: router (operator) moves collateral from trader → vault.
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
 
-        positionManager.openPosition(msg.sender, token, collateral, leverage, isLong);
+        // Open position via the FHE-specific entry point — no plaintext collateral or direction.
+        euint64 eLeverage = FHE.asEuint64(encLeverage);
+        ebool eIsLong = FHE.asEbool(encIsLong);
+        positionId = positionManager.openPositionFHE(msg.sender, token, eCollateral, eLeverage, eIsLong);
 
-        emit OpenPosition(msg.sender, token, collateral, leverage, isLong);
+        emit OpenPosition(positionId, msg.sender);
     }
 
     // -------------------------------------------------
     // CLOSE POSITION
     // -------------------------------------------------
 
-    function closePosition(address token, bool isLong) external payable requireFee {
-        fundingManager.updateFunding(token);
-        positionManager.requestClosePosition(msg.sender, token, isLong);
-        emit ClosePosition(msg.sender, token, isLong);
+    function closePosition(bytes32 positionId) external payable requireFee {
+        // We do respect the router's indexToken, but token is extracted inside PositionManager via positionId.
+        positionManager.requestClosePositionFHE(msg.sender, positionId);
+        emit ClosePosition(positionId, msg.sender);
     }
 
     // -------------------------------------------------
@@ -175,24 +209,40 @@ contract FHERouter {
 
     /**
      * @notice Create a limit/trigger order using FHE token collateral.
+     *         Both collateral and triggerPrice are encrypted client-side — the
+     *         values remain strictly encrypted.
      * @dev Caller must have granted this router operator status on the FHE token.
      */
     function createOrder(
-        address token,
-        uint256 collateral,
-        uint256 leverage,
-        uint256 triggerPrice,
-        bool isLong
+        address    token,
+        InEuint64  calldata encCollateral,
+        InEuint64  calldata encLeverage,
+        InEuint128 calldata encTriggerPrice,
+        InEbool    calldata encIsLong
     ) external payable requireFee {
-        require(collateral > 0, "invalid collateral");
-        require(collateral <= type(uint64).max, "collateral exceeds uint64 max");
         require(token == indexToken, "unsupported index token");
 
-        euint64 eCollateral = FHE.asEuint64(uint64(collateral));
-        FHE.allow(eCollateral, address(collateralToken));
+        fheFundingManager.updateFunding(token);
+
+        // Unwrap encrypted inputs.
+        euint64  eCollateral   = FHE.asEuint64(encCollateral);
+        euint128 eTriggerPrice = FHE.asEuint128(encTriggerPrice);
+
+        // Grant the order manager and vault access to the collateral handle.
+        FHE.allow(eCollateral,   address(collateralToken));
+        FHE.allow(eCollateral,   address(orderManager));
+        FHE.allow(eCollateral,   address(vault));   // for refund on cancel
+        FHE.allow(eCollateral,   msg.sender);        // trader self-decrypt
+        FHE.allow(eTriggerPrice, address(orderManager));
+
+        // Confidential transfer: collateral → vault.
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
 
-        orderManager.createOrder(msg.sender, token, collateral, leverage, triggerPrice, isLong);
+        euint64  eLeverage     = FHE.asEuint64(encLeverage);
+        ebool    eIsLong       = FHE.asEbool(encIsLong);
+
+        // Persist encrypted order — no plaintext collateral, leverage, isLong, or triggerPrice stored.
+        orderManager.createOrder(msg.sender, token, eCollateral, eLeverage, eTriggerPrice, eIsLong);
 
         emit OrderCreated(msg.sender, token);
     }
@@ -202,26 +252,88 @@ contract FHERouter {
     // -------------------------------------------------
 
     function cancelOrder(uint256 orderId) external {
-        (address trader, , uint256 collateral, , , ) = orderManager.getOrderMeta(orderId);
+        (address trader, , euint64 eCollateral, , , ) = orderManager.getOrderMeta(orderId);
         orderManager.cancelOrder(orderId, msg.sender);
-        vault.refundCollateral(trader, collateral);
+        // Refund encrypted collateral — no plaintext amount needed.
+        FHE.allow(eCollateral, address(vault));
+        vault.refundCollateral(trader, eCollateral);
     }
 
     // -------------------------------------------------
-    // EXECUTE ORDER (KEEPERS)
+    // EXECUTE ORDER (KEEPERS) — three-phase
     // -------------------------------------------------
 
-    function executeOrder(uint256 orderId) external {
+    /**
+     * @notice Phase 1 for limit-order execution — submit BOTH the encrypted liquidity check
+     *         and the encrypted price check for this order. Keepers decrypt both handles
+     *         off-chain, then call executeOrder with the dual proof.
+ *
+@param orderId Order to be executed.
+     * @return hasLiqHandle    Handle for the liquidity-sufficient boolean.
+     * @return shouldExecHandle Handle for the price-condition boolean.
+     */
+    function submitDecryptTaskForOrder(uint256 orderId)
+        external
+        returns (bytes32 hasLiqHandle, bytes32 shouldExecHandle)
+    {
         (
             address trader,
             address token,
-            uint256 collateral,
-            uint256 leverage,
-            bool isLong
-        ) = orderManager.executeOrder(orderId);
+            euint64 eCollateral,
+            euint64 eLeverage,
+            ,
+        ) = orderManager.getOrderMeta(orderId);
+        require(token == indexToken, "unsupported index token");
 
-        fundingManager.updateFunding(token);
-        positionManager.openPosition(trader, token, collateral, leverage, isLong);
+        fheFundingManager.updateFunding(token);
+
+        // Compute encrypted size for the liquidity check.
+        euint64 eSize = FHE.mul(eCollateral, eLeverage);
+        FHE.allow(eSize, address(vault));
+        vault.submitReserveLiquidityCheck(trader, eSize);
+
+        // Compute encrypted price check.
+        uint256 oraclePrice = _getOraclePrice(token);
+        shouldExecHandle = orderManager.submitPriceCheck(orderId, oraclePrice);
+
+        // hasLiqHandle is in the ReserveLiquidityCheckSubmitted event from the vault.
+        // Return it from the pending struct for convenience.
+        ( , hasLiqHandle) = _getPendingLiqHandle(trader);
+    }
+
+    /**
+     * @notice Phase 2 for limit-order execution — verify both the liquidity proof and the
+     *         price-condition proof, then open the position if both pass.
+ *
+@param orderId          Order to execute.
+     * @param shouldExecPlain  Decrypted price-condition boolean.
+     * @param shouldExecSig    Threshold Network signature for shouldExec.
+     * @param hasLiqPlain      Decrypted liquidity-sufficient boolean.
+     * @param hasLiqSig        Threshold Network signature for hasLiq.
+     */
+    function executeOrder(
+        uint256 orderId,
+        bool    shouldExecPlain,
+        bytes calldata shouldExecSig,
+        bool    hasLiqPlain,
+        bytes calldata hasLiqSig
+    ) external {
+        (
+            address trader,
+            address token,
+            euint64 eCollateral,
+            euint64 eLeverage,
+            ebool eIsLong
+        ) = orderManager.executeOrder(orderId, shouldExecPlain, shouldExecSig);
+
+
+        // Verify CoFHE liquidity proof for the order's trader.
+        vault.storeReserveLiquidityProof(trader, hasLiqPlain, hasLiqSig);
+
+        // Allow positionManager to use the collateral handle.
+        FHE.allow(eCollateral, address(positionManager));
+
+        positionManager.openPositionFHE(trader, token, eCollateral, eLeverage, eIsLong);
 
         emit OrderExecuted(orderId);
     }
@@ -231,38 +343,75 @@ contract FHERouter {
     // -------------------------------------------------
 
     /**
-     * @notice Add liquidity to Pool 2 vault using FHE token.
+     * @notice Add liquidity to ShadeSpot vault using FHE token.
+     *         The collateral amount is encrypted client-side — never appears in calldata.
      * @dev Caller must have granted this router operator status on the FHE token.
      */
-    function addLiquidity(uint256 amount) external {
-        require(amount > 0, "invalid amount");
-        require(amount <= type(uint64).max, "amount exceeds uint64 max");
-        euint64 eAmount = FHE.asEuint64(uint64(amount));
+    function addLiquidity(InEuint64 calldata encAmount) external {
+        euint64 eAmount = FHE.asEuint64(encAmount);
         FHE.allow(eAmount, address(collateralToken));
+        FHE.allow(eAmount, address(vault));
+        FHE.allow(eAmount, msg.sender);
+
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eAmount);
-        vault.deposit(msg.sender, amount);
-        emit AddLiquidity(msg.sender, amount);
+        // Pass the euint64 handle directly — vault.deposit(address, euint64).
+        vault.deposit(msg.sender, eAmount);
+
+        emit AddLiquidity(msg.sender, euint64.unwrap(eAmount));
     }
 
     /**
-     * @notice Phase 1 of remove liquidity: compute the encrypted share-to-token
-     *         ratio and submit CoFHE decrypt tasks for balance and liquidity checks.
-     *         Wait ~15–30 s for the dispatcher to publish results, then call
-     *         removeLiquidity with the same shares value.
-     * @param shares Plaintext share amount to redeem (visible in the LP's lpBalance).
+     * @notice Phase 1 of remove liquidity: compute the encrypted share-to-token ratio and
+     *         submit the FHE checks. Wait for off-chain decrypt (~15–30 s on live networks)
+     *         then call removeLiquidity with the proof values.
+     * @param shares Standard share amount to redeem.
      */
     function submitWithdrawCheck(uint256 shares) external {
         vault.submitWithdrawCheck(msg.sender, shares);
     }
 
     /**
-     * @notice Phase 2 of remove liquidity: execute the withdrawal using pre-submitted
-     *         decrypt results. The payout is sent as an encrypted euint64 transfer —
-     *         the exact amount is never exposed on-chain.
-     * @param shares Must match the value passed to submitWithdrawCheck.
+     * @notice Phase 2 of remove liquidity: verify decrypt proofs and execute the withdrawal.
+     *         Payout is sent as an encrypted euint64 transfer — exact amount never exposed.
+     * @param shares     Must match the value passed to submitWithdrawCheck.
+     * @param balPlain   Decrypted balance-check boolean.
+     * @param balSig     Threshold Network signature for hasBal.
+     * @param liqPlain   Decrypted liquidity-check boolean.
+     * @param liqSig     Threshold Network signature for hasLiq.
      */
-    function removeLiquidity(uint256 shares) external {
-        vault.withdraw(msg.sender, shares);
-        emit RemoveLiquidity(msg.sender, shares);
+    function removeLiquidity(
+        uint256 shares,
+        bool    balPlain,
+        bytes calldata balSig,
+        bool    liqPlain,
+        bytes calldata liqSig
+    ) external {
+        bytes32 amountHandle = vault.withdrawWithProof(
+            msg.sender, shares, balPlain, balSig, liqPlain, liqSig
+        );
+        // Emit the ciphertext handle — authorised party (LP) decrypts client-side.
+        emit RemoveLiquidity(msg.sender, amountHandle);
+    }
+
+    // -------------------------------------------------
+    // INTERNAL HELPERS
+    // -------------------------------------------------
+
+    function _getOraclePrice(address token) internal view returns (uint256) {
+        return positionManager.oracle().getPrice(token);  // exposed via positionManager
+    }
+
+    /**
+     * @notice Read the pending liq-check handle from FHEVault for a trader.
+     *         Returns (hasLiq ebool, hasLiqHandle bytes32) — used by submitDecryptTaskForOrder
+     *         to return the handle to the keeper without an extra event.
+     */
+    function _getPendingLiqHandle(address trader)
+        internal
+        view
+        returns (ebool hasLiq, bytes32 hasLiqHandle)
+    {
+        (hasLiq, ) = vault.pendingLiqCheck(trader);
+        hasLiqHandle = ebool.unwrap(hasLiq);
     }
 }
