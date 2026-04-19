@@ -35,8 +35,8 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
        │              │                │                  │
        ▼              ▼                ▼                  ▼
 ┌────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ FHEVault   │  │PositionManager│  │FHEOrderManager│  │FHEFunding    │
-│            │  │              │  │              │  │RateManager   │
+│ FHEVault   │  │PositionManager│ |FHEOrderManag │  │FHEFunding    │
+│            │  │              │  │  er          │  │RateManager   │
 │euint64     │  │euint128 size │  │euint128      │  │euint128      │
 │totalLiq    │  │euint128 coll │  │triggerPrice  │  │eLongOI       │
 │totalReserve│  │euint128 entry│  │euint64 coll  │  │eShortOI      │
@@ -87,7 +87,7 @@ Every field of every position is an FHE ciphertext. Nothing about a live positio
 Position Struct (on-chain storage):
 
   ┌──────────────────────────────────────────────┐
-  │  positionKey = keccak256(trader, token, nonce)│  ← direction NOT in key
+  │ positionKey = keccak256(trader, token, nonce)│  ← direction NOT in key
   ├──────────────────────────────────────────────┤
   │  size        euint128  ████████████████████  │  always encrypted
   │  collateral  euint128  ████████████████████  │  always encrypted
