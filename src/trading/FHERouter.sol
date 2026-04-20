@@ -144,6 +144,10 @@ contract FHERouter {
         FHE.allow(eCollateral, address(collateralToken));
         FHE.allow(eCollateral, address(positionManager));
         FHE.allow(eCollateral, msg.sender);
+        FHE.allow(eLeverage, address(positionManager));
+        FHE.allow(eLeverage, msg.sender);
+        FHE.allow(eIsLong, address(positionManager));
+        FHE.allow(eIsLong, msg.sender);
 
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
 
@@ -175,18 +179,19 @@ contract FHERouter {
         fheFundingManager.updateFunding(token);
 
         euint64  eCollateral   = FHE.asEuint64(encCollateral);
+        euint64  eLeverage     = FHE.asEuint64(encLeverage);
         euint128 eTriggerPrice = FHE.asEuint128(encTriggerPrice);
+        ebool    eIsLong       = FHE.asEbool(encIsLong);
 
         FHE.allow(eCollateral,   address(collateralToken));
         FHE.allow(eCollateral,   address(orderManager));
         FHE.allow(eCollateral,   address(vault));
         FHE.allow(eCollateral,   msg.sender);
         FHE.allow(eTriggerPrice, address(orderManager));
+        FHE.allow(eLeverage,     address(orderManager));
+        FHE.allow(eIsLong,       address(orderManager));
 
         collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
-
-        euint64  eLeverage     = FHE.asEuint64(encLeverage);
-        ebool    eIsLong       = FHE.asEbool(encIsLong);
 
         orderManager.createOrder(msg.sender, token, eCollateral, eLeverage, eTriggerPrice, eIsLong);
 
@@ -258,6 +263,8 @@ contract FHERouter {
         vault.storeReserveLiquidityProof(trader, hasLiqPlain, hasLiqSig);
 
         FHE.allow(eCollateral, address(positionManager));
+        FHE.allow(eLeverage, address(positionManager));
+        FHE.allow(eIsLong, address(positionManager));
 
         positionManager.openPositionFHE(trader, token, eCollateral, eLeverage, eIsLong);
 

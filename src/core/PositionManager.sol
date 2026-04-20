@@ -203,6 +203,8 @@ contract PositionManager {
         FHE.allow(ePrice,         trader);
         FHE.allow(eLeverage128,   trader);
         FHE.allow(eIsLong,        trader);
+        FHE.allow(eLeverage128,   address(fundingManagerFHE));
+        FHE.allow(eIsLong,        address(fundingManagerFHE));
 
         euint128 eFundingRate = fundingManagerFHE.getFundingRateBiased(token);
         FHE.allow(eFundingRate, address(this));
@@ -338,6 +340,8 @@ function finalizeClosePosition(
 
     FHE.allowTransient(position.eLeverage, address(this));
     FHE.allowTransient(position.isLong,    address(this));
+    FHE.allow(position.eLeverage, address(fundingManagerFHE));
+    FHE.allow(position.isLong,    address(fundingManagerFHE));
     fundingManagerFHE.decreaseOpenInterestFHE(token, position.eLeverage, position.isLong);
 
     vault.releaseLiquidity(sizePlain);
@@ -500,6 +504,8 @@ function finalizeClosePosition(
 
         FHE.allowTransient(position.eLeverage, address(this));
         FHE.allowTransient(position.isLong,    address(this));
+    FHE.allow(position.eLeverage, address(fundingManagerFHE));
+    FHE.allow(position.isLong,    address(fundingManagerFHE));
         fundingManagerFHE.decreaseOpenInterestFHE(token, position.eLeverage, position.isLong);
 
         vault.releaseLiquidity(sizePlain);

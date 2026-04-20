@@ -12,6 +12,7 @@
     "pool2:add-liquidity": "ts-node src/pool2-add-liquidity.ts",
     "pool2:open": "ts-node src/pool2-open.ts",
     "pool2:close": "ts-node src/pool2-close.ts",
+    "flow:happy": "ts-node src/flow-happy-path.ts",
     "decrypt:read": "ts-node src/decrypt-read.ts",
     "keeper": "ts-node src/keeper-finalize.ts",
     "keeper:pool2": "POOL=2 ts-node src/keeper-finalize.ts",

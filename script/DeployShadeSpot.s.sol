@@ -26,6 +26,8 @@ contract DeployShadeSpot is Script {
         address indexToken_ = vm.envAddress("INDEX_TOKEN");
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer    = vm.addr(deployerKey);
+        address finalizer_  = vm.envOr("FINALIZER", deployer);
+        uint256 initialPrice = vm.envOr("INITIAL_PRICE", uint256(0));
 
         vm.startBroadcast(deployerKey);
 
@@ -62,17 +64,24 @@ contract DeployShadeSpot is Script {
 
         vault.setPositionManager(address(positionManager));
         vault.setRouter(address(router));
+        positionManager.setRouter(address(router));
         positionManager.setFHEFundingManager(address(fundingManager));
         fundingManager.setPositionManager(address(positionManager));
 
         positionManager.setFheRouter(address(router));
         positionManager.setLiquidationManager(address(liquidationManager));
+        positionManager.setFinalizer(finalizer_);
 
         orderManager.setRouter(address(router));
 
         // Initialize FHE funding state for the index token so updateFunding()
         // doesn't encounter zero handles on the first trade.
         fundingManager.initializeToken(indexToken_);
+
+        // Optional bootstrap oracle price to avoid "price not set" on first flow tests.
+        if (initialPrice > 0) {
+            oracle.setPrice(indexToken_, initialPrice);
+        }
 
         vm.stopBroadcast();
 
@@ -85,6 +94,10 @@ contract DeployShadeSpot is Script {
         console2.log("FHEOrderManager:     ", address(orderManager));
         console2.log("LiquidationManager:  ", address(liquidationManager));
         console2.log("FHERouter:           ", address(router));
+        console2.log("Finalizer:           ", finalizer_);
+        if (initialPrice > 0) {
+            console2.log("Initial price set:   ", initialPrice);
+        }
         console2.log("\nIndex token (ETH):   ", indexToken_);
     }
 }

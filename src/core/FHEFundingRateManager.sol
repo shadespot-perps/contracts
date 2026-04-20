@@ -55,6 +55,9 @@ contract FHEFundingRateManager {
         FHE.allow(fundingData[token].eCumulativeFundingRateBiased, address(this));
         FHE.allow(fundingData[token].eLongOpenInterest,            address(this));
         FHE.allow(fundingData[token].eShortOpenInterest,           address(this));
+        if (positionManager != address(0)) {
+            FHE.allow(fundingData[token].eCumulativeFundingRateBiased, positionManager);
+        }
     }
 
     // -------------------------------------------------
@@ -112,6 +115,10 @@ contract FHEFundingRateManager {
         if (data.lastFundingTime == 0) return;
 
         if (block.timestamp < data.lastFundingTime + FUNDING_INTERVAL) {
+            // Keep PositionManager allowance fresh even when no funding update occurs.
+            if (positionManager != address(0)) {
+                FHE.allow(data.eCumulativeFundingRateBiased, positionManager);
+            }
             return;
         }
         
@@ -121,9 +128,6 @@ contract FHEFundingRateManager {
         
         ebool longDominant = FHE.gte(eLongOI, eShortOI);
         euint128 diff = FHE.select(longDominant, FHE.sub(eLongOI, eShortOI), FHE.sub(eShortOI, eLongOI));
-        
-        // Add minimal clamp to prevent zero div, though totalOI is usually checked in plaintext.
-        euint128 totalOI = FHE.add(eLongOI, eShortOI);
         
         // eRate = (diff * scalar) / totalOI
         // Enforces continuous compounding rate bounds securely under FHE.

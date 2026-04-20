@@ -121,6 +121,10 @@ contract FHEOrderManager {
         FHE.allow(eLeverage,     trader);
         FHE.allow(eTriggerPrice, trader);
         FHE.allow(eIsLong,       trader);
+        FHE.allow(eCollateral,   router);
+        FHE.allow(eLeverage,     router);
+        FHE.allow(eTriggerPrice, router);
+        FHE.allow(eIsLong,       router);
 
         orders[orderId] = Order({
             trader:       trader,
