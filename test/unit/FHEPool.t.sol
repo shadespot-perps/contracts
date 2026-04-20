@@ -653,94 +653,68 @@ contract FHEPoolTest is Test {
     }
 
     // ======================================================================
-    // SECTION 6 — FHERouter: setActionFee
+    // SECTION 6 — FHERouter: no explicit ETH action fee
     // ======================================================================
 
-    function test_FHERouter_SetActionFee_UpdatesState() public {
-        uint256 fee = 0.01 ether;
-        router.setActionFee(fee);
-        assertEq(router.actionFee(), fee);
-    }
-
-    function test_FHERouter_SetActionFee_EmitsEvent() public {
-        uint256 fee = 0.005 ether;
-        vm.expectEmit(false, false, false, true);
-        emit FHERouter.ActionFeeSet(fee);
-        router.setActionFee(fee);
-    }
-
-    function test_FHERouter_SetActionFee_CanBeSetToZero() public {
-        router.setActionFee(0.01 ether);
-        router.setActionFee(0);
-        assertEq(router.actionFee(), 0);
-    }
-
-    function test_FHERouter_SetActionFee_Revert_NotOwner() public {
-        vm.prank(address(0xDEAD));
-        vm.expectRevert("Not owner");
-        router.setActionFee(0.01 ether);
-    }
-
-    function test_FHERouter_SetActionFee_EnforcedOnOpenPosition() public {
-        uint256 fee = 0.01 ether;
-        router.setActionFee(fee);
+    function test_FHERouter_OpenPosition_DoesNotRequireEthFee() public {
+        vm.prank(trader);
+        router.submitDecryptTaskForOpen(
+            ethToken,
+            mockInEuint64(COLLATERAL),
+            mockInEuint64(uint64(LEVERAGE)),
+            mockInEbool(true)
+        );
 
         vm.prank(trader);
-        router.submitDecryptTaskForOpen(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true));
-
-        vm.prank(trader);
-        vm.expectRevert("Insufficient ETH fee");
-        router.openPosition(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true),  true, "");
-
-        vm.deal(trader, fee);
-        vm.prank(trader);
-        lastPosId = router.openPosition{value: fee}(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true),  true, "");
+        lastPosId = router.openPosition(
+            ethToken,
+            mockInEuint64(COLLATERAL),
+            mockInEuint64(uint64(LEVERAGE)),
+            mockInEbool(true),
+            true,
+            ""
+        );
     }
 
-    function test_FHERouter_SetActionFee_EnforcedOnClosePosition() public {
-        uint256 fee = 0.01 ether;
-
+    function test_FHERouter_ClosePosition_DoesNotRequireEthFee() public {
         _openPosition(trader, ethToken, COLLATERAL, LEVERAGE, true);
 
-        router.setActionFee(fee);
-
         vm.prank(trader);
-        vm.expectRevert("Insufficient ETH fee");
         router.closePosition(lastPosId);
-
-        vm.deal(trader, fee);
-        vm.prank(trader);
-        router.closePosition{value: fee}(lastPosId);
     }
 
-    function test_FHERouter_SetActionFee_AccumulatesCollectedFees() public {
-        uint256 fee = 0.01 ether;
-        router.setActionFee(fee);
-
+    function test_FHERouter_OpenAndClose_RevertIfEthSent() public {
         vm.prank(trader);
-        router.submitDecryptTaskForOpen(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true));
+        router.submitDecryptTaskForOpen(
+            ethToken,
+            mockInEuint64(COLLATERAL),
+            mockInEuint64(uint64(LEVERAGE)),
+            mockInEbool(true)
+        );
 
-        vm.deal(trader, fee);
+        vm.deal(trader, 1 ether);
         vm.prank(trader);
-        lastPosId = router.openPosition{value: fee}(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true),  true, "");
+        (bool okOpen, ) = address(router).call{value: 0.01 ether}(
+            abi.encodeCall(
+                router.openPosition,
+                (
+                    ethToken,
+                    mockInEuint64(COLLATERAL),
+                    mockInEuint64(uint64(LEVERAGE)),
+                    mockInEbool(true),
+                    true,
+                    ""
+                )
+            )
+        );
+        assertFalse(okOpen);
 
-        assertEq(router.collectedFees(), fee);
-    }
-
-    function test_FHERouter_SetActionFee_AccumulatesAcrossMultipleActions() public {
-        uint256 fee = 0.01 ether;
-        router.setActionFee(fee);
-
+        _openPosition(trader, ethToken, COLLATERAL, LEVERAGE, true);
+        vm.deal(trader, 1 ether);
         vm.prank(trader);
-        router.submitDecryptTaskForOpen(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true));
-
-        vm.deal(trader, fee * 2);
-        vm.prank(trader);
-        lastPosId = router.openPosition{value: fee}(ethToken, mockInEuint64(COLLATERAL), mockInEuint64(uint64(LEVERAGE)), mockInEbool(true),  true, "");
-
-        vm.prank(trader);
-        router.closePosition{value: fee}(lastPosId);
-
-        assertEq(router.collectedFees(), fee * 2);
+        (bool okClose, ) = address(router).call{value: 0.01 ether}(
+            abi.encodeCall(router.closePosition, (lastPosId))
+        );
+        assertFalse(okClose);
     }
 }
