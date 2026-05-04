@@ -493,19 +493,26 @@ forge build
 
 ```
 == Logs ==
-  MockFHEToken deployed: 0xECA3Bd8c251D5aFC09D2AfBc6A9698C4c722d64f
+  MockFHEToken deployed: 0xe3843689B78709463a77Faa30d7A2Df72f56163b
   
 === ShadeSpot FHE deployment complete ===
-  FHE collateral:       0xECA3Bd8c251D5aFC09D2AfBc6A9698C4c722d64f
-  PriceOracle:          0x5a64CC75e6530c5796f0580Fbc0cb4D0d40F6DdE
-  FHEFundingManager:    0xD88047A9dc074602B2e2aD137e0b2b1213CBAAc7
-  FHEVault:             0x9d54AD33eBCfD83F114aC10eBd8975419Cf71DeB
-  PositionManager:      0xE56779b7d3D61cC9f362B93358C4d1f18Fb96d0d
-  FHEOrderManager:      0x165232D73A11793808525E8DFe60aabC8A1cb2BB
-  LiquidationManager:   0x060A37A7786250e1bFa55C775A00335063Be8853
-  FHERouter:            0xe864f96517e38af9e25725Fdfe17910dE5c9a4c3
+  FHE collateral:       0xe3843689B78709463a77Faa30d7A2Df72f56163b
+  PriceOracle:          0x372cCb135c97e106eD44701e6170Ac4C06Dc3F72
+  FHEFundingManager:    0x53903cBAAdd1F5B6bAEa95F654B7A9De17F69D75
+  FHEVault:             0xF522f386046644b359472E05340BB692751C5A37
+  PositionManager:      0xD61852B3E1f0E8c49A8EB5dCD039926744b853f0
+  FHEOrderManager:      0xDEBA979720dF2454a1e34f9304F66dD0003BBf78
+  LiquidationManager:   0x09AB5a52d7f4f1c58D966634F2aBdAEa6cA0265f
+  FHERouter:            0x3F476E2D46eA857aD82DA28c41a15d336F3bA83D
   Finalizer:            0x2b284c179a65709fC823711e6D76134E55a63798
   Initial price set:    200000000000
   
 Index token (ETH):    0x980B62Da83eFf3D4576C647993b0c1D7faf17c73
 ```
+
+cd shadespot && source .env && forge script script/DeployShadeSpot.s.sol:DeployShadeSpot \
+  --rpc-url arbitrum_sepolia \
+  --broadcast \
+  --verify \
+  --etherscan-api-key "$ARBISCAN_API_KEY" \
+  -vvv

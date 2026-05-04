@@ -26,17 +26,15 @@ import { ethers, Wallet, JsonRpcProvider, Contract, EventLog } from "ethers";
 import { createCofheConfig, createCofheClient } from "@cofhe/sdk/node";
 import { Ethers6Adapter } from "@cofhe/sdk/adapters";
 import { arbSepolia } from "@cofhe/sdk/chains";
-import { RPC_URL, PRIVATE_KEY, INDEX_TOKEN, POOL1, POOL2 } from "./config";
+import { RPC_URL, PRIVATE_KEY, POOL1, POOL2 } from "./config";
 
 // ── ABIs ─────────────────────────────────────────────────────────────────────
 
 const POSITION_MANAGER_ABI = [
-  "function getPositionKey(address trader, address token, bool isLong) public pure returns (bytes32)",
-  "function pendingFinalAmount(bytes32 positionKey) external view returns (bytes32)",
-  "function positions(bytes32 key) external view returns (address owner, address indexToken, bytes32 size, bytes32 collateral, bytes32 entryPrice, int256 entryFundingRate, bytes32 isLong, bool exists)",
-  "function finalizeClosePosition(address trader, address token, bool isLong, uint256 finalAmount, bytes calldata finalAmountSig, uint256 sizePlain, bytes calldata sizeSig) external",
-  "event CloseRequested(bytes32 indexed positionKey, address indexed trader, address indexed token, bool isLong, bytes32 finalAmountHandle)",
-  "event CloseFinalized(bytes32 indexed positionKey, address indexed trader, address indexed token, bool isLong, uint256 finalAmount, uint256 size)",
+  "function finalizeClosePosition(bytes32 positionKey,uint256 finalAmount,bytes finalAmountSignature,uint256 sizePlain,bytes sizeSignature,uint256 collateralPlain,bytes collateralSignature,bool isLongPlain) external",
+  "event CloseRequested(bytes32 indexed positionKey, address indexed trader, bytes32 finalAmountHandle, bytes32 sizeHandle)",
+  "event CloseFinalized(bytes32 indexed positionKey, address indexed trader, bytes32 finalAmountHandle)",
+  "event PositionOpened(bytes32 indexed positionKey, address indexed trader, bytes32 sizeHandle, bytes32 collateralHandle, bytes32 isLongHandle)",
 ];
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -53,11 +51,10 @@ const DECRYPT_RETRY_MS    = 15_000; // 15s between retries
 
 interface PendingClose {
   trader:            string;
-  token:             string;
-  isLong:            boolean;
   positionKey:       string;
   finalAmountHandle: bigint;
   sizeHandle:        bigint;
+  collateralHandle:  bigint;
 }
 
 // ── decryptForTx with retry ───────────────────────────────────────────────────
@@ -65,13 +62,14 @@ interface PendingClose {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function decryptHandle(cofheClient: any, ctHash: bigint, label: string): Promise<{ value: bigint; sig: string }> {
   const ctHashHex = "0x" + ctHash.toString(16).padStart(64, "0");
+  const permit = await cofheClient.permits.getOrCreateSelfPermit();
 
   for (let attempt = 1; attempt <= DECRYPT_RETRIES; attempt++) {
     try {
       console.log(`  [${label}] decryptForTx attempt ${attempt}/${DECRYPT_RETRIES}...`);
       const result = await cofheClient
         .decryptForTx(ctHashHex)
-        .withoutPermit()
+        .withPermit(permit)
         .execute();
 
       console.log(`  [${label}] decrypted: ${result.decryptedValue}`);
@@ -104,37 +102,40 @@ function enqueueFinalize(fn: () => Promise<void>): void {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function finalize(pending: PendingClose, pm: Contract, cofheClient: any): Promise<void> {
-  const { trader, token, isLong, positionKey, finalAmountHandle, sizeHandle } = pending;
+  const { trader, positionKey, finalAmountHandle, sizeHandle, collateralHandle } = pending;
 
-  console.log(`\n[Finalize] trader=${trader}  isLong=${isLong}`);
+  console.log(`\n[Finalize] trader=${trader}`);
   console.log(`  positionKey:        ${positionKey}`);
   console.log(`  finalAmountHandle:  0x${finalAmountHandle.toString(16).padStart(64, "0")}`);
   console.log(`  sizeHandle:         0x${sizeHandle.toString(16).padStart(64, "0")}`);
+  console.log(`  collateralHandle:   0x${collateralHandle.toString(16).padStart(64, "0")}`);
   console.log(`  Requesting decryption from Threshold Network...`);
 
-  // Both handles are globally allowed (FHE.allowPublic), so .withoutPermit() is correct.
-  // Decrypt both concurrently — TN processes them independently.
-  const [finalAmountRes, sizeRes] = await Promise.all([
+  // Decrypt all close-finalization handles concurrently.
+  const [finalAmountRes, sizeRes, collateralRes] = await Promise.all([
     decryptHandle(cofheClient, finalAmountHandle, "finalAmount"),
     decryptHandle(cofheClient, sizeHandle,        "size"),
+    decryptHandle(cofheClient, collateralHandle,  "collateral"),
   ]);
 
   console.log(`\n  finalAmount : ${finalAmountRes.value}  (${(Number(finalAmountRes.value) / 1e6).toFixed(6)} units)`);
   console.log(`  sizePlain   : ${sizeRes.value}`);
+  console.log(`  collateral  : ${collateralRes.value}`);
 
   // Enqueue the send so concurrent decryptions don't race on the wallet nonce.
   await new Promise<void>((resolve, reject) => {
     enqueueFinalize(async () => {
       try {
-        console.log(`\n  Calling finalizeClosePosition for ${trader} isLong=${isLong}...`);
+        console.log(`\n  Calling finalizeClosePosition for ${trader}...`);
         const tx      = await pm.finalizeClosePosition(
-          trader,
-          token,
-          isLong,
+          positionKey,
           finalAmountRes.value,
           finalAmountRes.sig,
           sizeRes.value,
           sizeRes.sig,
+          collateralRes.value,
+          collateralRes.sig,
+          false,
         );
         const receipt = await tx.wait();
 
@@ -147,8 +148,9 @@ async function finalize(pending: PendingClose, pm: Contract, cofheClient: any): 
             const parsed = iface.parseLog({ topics: [...log.topics], data: log.data });
             if (parsed?.name === "CloseFinalized") {
               console.log(`\n  CloseFinalized:`);
-              console.log(`    finalAmount : ${parsed.args.finalAmount}  (${(Number(parsed.args.finalAmount) / 1e6).toFixed(6)} units)`);
-              console.log(`    size        : ${parsed.args.size}`);
+              console.log(`    positionKey : ${parsed.args.positionKey}`);
+              console.log(`    trader      : ${parsed.args.trader}`);
+              console.log(`    handle      : ${parsed.args.finalAmountHandle}`);
             }
           } catch {}
         }
@@ -162,26 +164,45 @@ async function finalize(pending: PendingClose, pm: Contract, cofheClient: any): 
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
-async function buildPendingClose(
-  pm:     Contract,
-  trader: string,
-  token:  string,
-  isLong: boolean,
-): Promise<PendingClose | null> {
-  const key    = await pm.getPositionKey(trader, token, isLong) as string;
-  const handle = await pm.pendingFinalAmount(key) as string;
-  if (BigInt(handle) === 0n) return null;
+async function resolveCollateralHandle(
+  pm: Contract,
+  positionKey: string,
+  fromBlock: number,
+): Promise<bigint | null> {
+  const openedLogs = await pm.queryFilter(
+    pm.filters.PositionOpened(positionKey, null),
+    fromBlock,
+    "latest",
+  );
+  if (openedLogs.length === 0) return null;
+  const opened = openedLogs[openedLogs.length - 1] as EventLog;
+  const collateralHandle = opened.args[3] as string;
+  return BigInt(collateralHandle);
+}
 
-  const position = await pm.positions(key);
-  if (!position.exists) return null;
+async function buildPendingFromEvent(
+  pm: Contract,
+  e: EventLog,
+  fromBlock: number,
+): Promise<PendingClose | null> {
+  const positionKey = e.args[0] as string;
+  const trader = e.args[1] as string;
+  const finalAmountHandle = BigInt(e.args[2] as string);
+  const sizeHandle = BigInt(e.args[3] as string);
+  if (finalAmountHandle === 0n || sizeHandle === 0n) return null;
+
+  const collateralHandle = await resolveCollateralHandle(pm, positionKey, fromBlock);
+  if (!collateralHandle || collateralHandle === 0n) {
+    console.warn(`  [Skip] collateral handle not found for position ${positionKey}`);
+    return null;
+  }
 
   return {
     trader,
-    token,
-    isLong,
-    positionKey:       key,
-    finalAmountHandle: BigInt(handle),
-    sizeHandle:        BigInt(position.size as string),
+    positionKey,
+    finalAmountHandle,
+    sizeHandle,
+    collateralHandle,
   };
 }
 
@@ -225,16 +246,22 @@ async function main() {
   // ── One-shot mode ─────────────────────────────────────────────────────────
   if (SPECIFIC_TRADER) {
     console.log(`\nOne-shot mode — trader: ${SPECIFIC_TRADER}`);
-    let found = false;
+    const startBlock = FROM_BLOCK || 0;
+    const reqLogs = await pm.queryFilter(
+      pm.filters.CloseRequested(null, SPECIFIC_TRADER),
+      startBlock,
+      "latest",
+    );
 
-    for (const isLong of [true, false]) {
-      const pending = await buildPendingClose(pm, SPECIFIC_TRADER, INDEX_TOKEN, isLong);
+    let found = 0;
+    for (const evt of reqLogs) {
+      const pending = await buildPendingFromEvent(pm, evt as EventLog, startBlock);
       if (!pending) continue;
-      found = true;
+      found++;
       await finalize(pending, pm, cofheClient);
     }
 
-    if (!found) {
+    if (found === 0) {
       console.log(`No pending close for ${SPECIFIC_TRADER} on Pool ${POOL}.`);
       console.log(`Call closePosition first (emits CloseRequested).`);
     }
@@ -252,20 +279,15 @@ async function main() {
   const uniquePending = new Map<string, PendingClose>();
 
   for (const evt of past) {
-    const e      = evt as EventLog;
-    const trader = e.args[1] as string;
-    const token  = e.args[2] as string;
-    const isLong = e.args[3] as boolean;
-
-    const pending = await buildPendingClose(pm, trader, token, isLong);
+    const pending = await buildPendingFromEvent(pm, evt as EventLog, startBlock);
     if (!pending) continue;
-    uniquePending.set(pending.finalAmountHandle.toString(), pending);
+    uniquePending.set(pending.positionKey, pending);
   }
 
   let replayed = 0;
   for (const pending of uniquePending.values()) {
     replayed++;
-    console.log(`  [Replay] trader=${pending.trader}  isLong=${pending.isLong}`);
+    console.log(`  [Replay] trader=${pending.trader}  positionKey=${pending.positionKey}`);
     tryFinalize(pending);
   }
   console.log(`  Replayed ${replayed} unique pending close(s).\n`);
@@ -276,21 +298,22 @@ async function main() {
     async (
       positionKey:       string,
       trader:            string,
-      token:             string,
-      isLong:            boolean,
       finalAmountHandle: string,
+      sizeHandle:        string,
       event:             EventLog,
     ) => {
-      console.log(`\n[Event] CloseRequested  block=${event.blockNumber}  trader=${trader}  isLong=${isLong}`);
-
-      const position = await pm.positions(positionKey);
+      console.log(`\n[Event] CloseRequested  block=${event.blockNumber}  trader=${trader}  positionKey=${positionKey}`);
+      const collateralHandle = await resolveCollateralHandle(pm, positionKey, Number(event.blockNumber));
+      if (!collateralHandle || collateralHandle === 0n) {
+        console.warn(`  [Skip] collateral handle not found for live event position ${positionKey}`);
+        return;
+      }
       tryFinalize({
         trader,
-        token,
-        isLong,
         positionKey,
         finalAmountHandle: BigInt(finalAmountHandle),
-        sizeHandle:        BigInt(position.size as string),
+        sizeHandle: BigInt(sizeHandle),
+        collateralHandle,
       });
     },
   );
