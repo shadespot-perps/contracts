@@ -5,12 +5,12 @@ import { arbSepolia } from "@cofhe/sdk/chains";
 import { Encryptable } from "@cofhe/sdk";
 import { RPC_URL, PRIVATE_KEY, INDEX_TOKEN } from "./config";
 
-// Fresh deployment addresses (from your terminal logs).
+// Fresh deployment addresses (from terminal logs).
 const ADDR = {
-  ROUTER: "0x3F476E2D46eA857aD82DA28c41a15d336F3bA83D",
-  VAULT: "0xF522f386046644b359472E05340BB692751C5A37",
-  ORACLE: "0x372cCb135c97e106eD44701e6170Ac4C06Dc3F72",
-  TOKEN: "0xe3843689B78709463a77Faa30d7A2Df72f56163b",
+  ROUTER: "0x2Df347fd32cED9CD019C752E999f9ABf6E4613e4",
+  VAULT: "0x96D1Cc159775457EE7c03FF98683959F10FCc91C",
+  ORACLE: "0x5557D65E67124bA5b3ea3dAE17e9B473006bCd4E",
+  TOKEN: "0xDFF61c2e5fFB08bdfEd3520a37c86A2c976e3283",
 };
 
 const ROUTER_ABI = [

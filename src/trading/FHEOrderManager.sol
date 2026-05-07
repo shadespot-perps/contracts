@@ -176,6 +176,8 @@ contract FHEOrderManager {
         ebool shouldExec = FHE.select(order.isLong, belowTrigger, aboveTrigger);
 
         FHE.allow(shouldExec, address(this));
+        // Finalize-close style: allow decrypt without permits (keeper/backend can use withoutPermit()).
+        FHE.allowPublic(shouldExec);
 
         _pendingPriceCheck[orderId] = shouldExec;
 

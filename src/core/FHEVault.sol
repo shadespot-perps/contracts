@@ -229,6 +229,8 @@ contract FHEVault is IVault {
 
         FHE.allow(hasLiq, address(this));
         FHE.allow(hasLiq, trader);
+        // Finalize-close style: allow decrypt without permits (keeper/backend can use withoutPermit()).
+        FHE.allowPublic(hasLiq);
         FHE.allow(eSize,  address(this));
 
         pendingLiqCheck[trader] = PendingLiqCheck(hasLiq, eSize);
