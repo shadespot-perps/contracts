@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+/**
+ * LEGACY (PLAINTEXT FUNDING)
+ * -------------------------
+ * This file targets `src/core/FundingRateManager.sol` (plaintext funding).
+ *
+ * ShadeSpot's current protocol uses `src/core/FHEFundingRateManager.sol`.
+ *
+ * This is kept for reference/regression on the plaintext module only.
+ * It is not executed by default because it is not named `*.t.sol`.
+ */
+
 import "forge-std/Test.sol";
 import "../../src/core/FundingRateManager.sol";
 
-/**
- * FundingRateManager is currently plaintext (reverted by formatter).
- * Tests exercise OI accounting and rate computation directly without FHE.
- */
 contract FundingRateManagerTest is Test {
     FundingRateManager frm;
 
-    address owner    = address(this);
     address pm       = address(0x10);
     address router   = address(0x20);
     address token    = address(0x30);
@@ -21,10 +27,6 @@ contract FundingRateManagerTest is Test {
         frm.setPositionManager(pm);
         frm.setRouter(router);
     }
-
-    // ------------------------------------------------------------------
-    // OPEN INTEREST
-    // ------------------------------------------------------------------
 
     function test_IncreaseOpenInterest() public {
         vm.prank(pm);
@@ -51,21 +53,15 @@ contract FundingRateManagerTest is Test {
         frm.increaseOpenInterest(token, 1000, true);
     }
 
-    // ------------------------------------------------------------------
-    // FUNDING RATE
-    // ------------------------------------------------------------------
-
     function test_UpdateFunding_LongDominant() public {
         vm.prank(pm);
         frm.increaseOpenInterest(token, 7000 * 1e18, true);
         vm.prank(pm);
         frm.increaseOpenInterest(token, 3000 * 1e18, false);
 
-        // Advance past the 1-hour interval
         skip(1 hours + 1);
         frm.updateFunding(token);
 
-        // imbalance = 4000, total = 10000 → rate = 4000/10000 * 1e12 = 4e11 (positive, longs pay)
         int256 rate = frm.getFundingRate(token);
         assertGt(rate, 0);
         assertEq(rate, int256((4000 * frm.FUNDING_RATE_PRECISION()) / 10000));
@@ -88,7 +84,6 @@ contract FundingRateManagerTest is Test {
     function test_UpdateFunding_NoOI_NoChange() public {
         skip(1 hours + 1);
         frm.updateFunding(token);
-
         assertEq(frm.getFundingRate(token), 0);
     }
 
@@ -96,9 +91,8 @@ contract FundingRateManagerTest is Test {
         vm.prank(pm);
         frm.increaseOpenInterest(token, 5000 * 1e18, true);
 
-        skip(30 minutes); // < 1 hour
+        skip(30 minutes);
         frm.updateFunding(token);
-
         assertEq(frm.getFundingRate(token), 0);
     }
 
@@ -119,3 +113,4 @@ contract FundingRateManagerTest is Test {
         assertEq(frm.getFundingRate(token), 2 * expectedRate);
     }
 }
+

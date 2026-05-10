@@ -20,6 +20,12 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
 
 ## Core Architecture
 
+High-level relationships between traders/LPs, `FHERouter`, and core modules:
+
+![General Architecture](../diagrams/General%20Architecture.png)
+
+Text overview (same structure as the diagram):
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        TRADER / LP                                  │
@@ -51,6 +57,18 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
     │              │   │(ebool canLiq)│
     └──────────────┘   └──────────────┘
 ```
+
+### Opening a position (market order flow)
+
+Encrypted inputs go through reserve/check phases, CoFHE decrypt for guards, then `FHERouter` opens the position against `PositionManager` and `FHEVault`:
+
+![Open position — overview](../diagrams/Open%20Position.png)
+
+![Open position — continuation](../diagrams/Open%20Position%202.png)
+
+![Open position — continuation](../diagrams/Open%20Position%203.png)
+
+![Open position — continuation](../diagrams/Open%20Position%204.png)
 
 ---
 
