@@ -3,6 +3,8 @@ pragma solidity ^0.8.25;
 
 import "./IVault.sol";
 import "../tokens/IEncryptedERC20.sol";
+import "../tokens/IEncryptedLPToken.sol";
+
 import { FHE, euint64, euint128, ebool } from "cofhe-contracts/FHE.sol";
 
 /**
@@ -11,7 +13,8 @@ import { FHE, euint64, euint128, ebool } from "cofhe-contracts/FHE.sol";
  */
 contract FHEVault is IVault {
 
-    IEncryptedERC20 public immutable collateralToken;
+    IEncryptedERC20    public immutable collateralToken;
+    IEncryptedLPToken  public lpToken;
 
     address public positionManager;
     address public router;
@@ -22,6 +25,7 @@ contract FHEVault is IVault {
 
     euint64 public encryptedTotalSupply;
     mapping(address => euint64) public lpBalance;
+    mapping(address => euint64) public pendingDeposit;
 
     bool public initialized;
 
@@ -80,6 +84,7 @@ contract FHEVault is IVault {
 
     constructor(address _token, address _owner) {
         collateralToken = IEncryptedERC20(_token);
+ 
         owner = _owner;
     }
 
@@ -91,6 +96,11 @@ contract FHEVault is IVault {
     function setRouter(address _router) external onlyOwner {
         require(router == address(0), "Already set");
         router = _router;
+    }
+
+    function setLPToken(address _lpToken) external onlyOwner {
+        require(address(lpToken) == address(0), "Already set");
+        lpToken = IEncryptedLPToken(_lpToken);
     }
 
     // --------------------------------------------------------
@@ -106,13 +116,19 @@ contract FHEVault is IVault {
      */
     function deposit(address lp, euint64 eAmount) external onlyRouter {
         euint64 shares;
-
+   require(
+    euint64.unwrap(pendingDeposit[lp]) == bytes32(0),
+    "Pending deposit exists"
+      );
         if (!initialized) {
             shares = eAmount;
             initialized = true;
         } else {
             shares = FHE.div(FHE.mul(eAmount, encryptedTotalSupply), totalLiquidity);
         }
+
+        // store for later
+    //    pendingDeposit[lp] = shares;
 
         lpBalance[lp]         = FHE.add(lpBalance[lp], shares);
         encryptedTotalSupply   = FHE.add(encryptedTotalSupply, shares);
@@ -124,8 +140,14 @@ contract FHEVault is IVault {
 
         FHE.allow(lpBalance[lp],       lp);
 
+        if (address(lpToken) != address(0)) {
+            FHE.allow(shares, address(lpToken));
+            lpToken.mint(lp, shares);
+        }
+
         emit Deposit(lp, euint64.unwrap(eAmount));
     }
+
 
     function deposit(address, uint256) external pure override {
         revert("FHEVault: use deposit(address,euint64)");
@@ -202,6 +224,11 @@ contract FHEVault is IVault {
         FHE.allow(totalLiquidity,       address(this));
         FHE.allow(eAmount,              address(collateralToken));
         FHE.allow(eAmount,              lp);
+
+        if (address(lpToken) != address(0)) {
+            FHE.allow(eShares, address(lpToken));
+            lpToken.burn(lp, eShares);
+        }
 
         collateralToken.confidentialTransfer(lp, eAmount);
 
