@@ -98,7 +98,7 @@ contract PositionManager {
     }
 
     modifier onlyFinalizer() {
-        require(msg.sender == finalizer, "only finalizer");
+        require(msg.sender == finalizer || msg.sender == router, "not authorized");
         _;
     }
 
@@ -168,6 +168,10 @@ contract PositionManager {
     /// @notice Returns whether a position exists for the provided key.
     function positionExists(bytes32 key) external view returns (bool) {
         return positions[key].exists;
+    }
+
+    function getPositionOwner(bytes32 key) external view returns (address) {
+        return positions[key].owner;
     }
 
     /**
@@ -360,6 +364,57 @@ function finalizeClosePosition(
     emit PositionClosed(key, trader);
     emit CloseFinalized(key, trader, euint128.unwrap(eFinalAmount));
 }
+
+    /**
+     * @notice Finalizes a close where the trader requested plain ERC-20 payout.
+     *         Identical accounting to finalizeClosePosition, but delegates to
+     *         vault.payTraderPlain which burns encrypted from vault and sends underlying.
+     */
+    function finalizeClosePositionPlain(
+        bytes32 positionKey,
+        uint256 finalAmount,
+        bytes calldata finalAmountSignature,
+        uint256 sizePlain,
+        bytes calldata sizeSignature,
+        uint256 collateralPlain,
+        bytes calldata collateralSignature,
+        bool isLongPlain
+    ) external onlyFinalizer {
+        bytes32 key = positionKey;
+        Position storage position = positions[key];
+        address trader = position.owner;
+        address token  = position.indexToken;
+        require(position.exists, "position does not exist");
+
+        euint128 eFinalAmount = pendingFinalAmount[key];
+        require(euint128.unwrap(eFinalAmount) != bytes32(0), "close not requested");
+
+        FHE.publishDecryptResult(eFinalAmount,        uint128(finalAmount),    finalAmountSignature);
+        FHE.publishDecryptResult(position.size,       uint128(sizePlain),      sizeSignature);
+        FHE.publishDecryptResult(position.collateral, uint128(collateralPlain), collateralSignature);
+
+        FHE.allowTransient(position.eLeverage, address(this));
+        FHE.allowTransient(position.isLong,    address(this));
+        FHE.allow(position.eLeverage, address(fundingManagerFHE));
+        FHE.allow(position.isLong,    address(fundingManagerFHE));
+        fundingManagerFHE.decreaseOpenInterestFHE(token, position.eLeverage, position.isLong);
+
+        vault.releaseLiquidity(sizePlain);
+        if (finalAmount >= collateralPlain) {
+            uint256 profit = finalAmount - collateralPlain;
+            vault.payTraderPlain(trader, profit, collateralPlain);
+        } else {
+            vault.receiveLoss(collateralPlain - finalAmount);
+            vault.payTraderPlain(trader, 0, finalAmount);
+        }
+
+        delete positions[key];
+        pendingFinalAmount[key]  = euint128.wrap(bytes32(0));
+        pendingCanLiquidate[key] = ebool.wrap(bytes32(0));
+
+        emit PositionClosed(key, trader);
+        emit CloseFinalized(key, trader, euint128.unwrap(eFinalAmount));
+    }
 
     function computePnl(
         Position memory position,

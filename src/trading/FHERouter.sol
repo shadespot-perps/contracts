@@ -5,8 +5,10 @@ import "../core/FHEFundingRateManager.sol";
 import "../core/PositionManager.sol";
 import "../core/FHEVault.sol";
 import "./FHEOrderManager.sol";
+
 import "../tokens/IEncryptedERC20.sol";
 import { FHE, euint64, euint128, ebool, InEbool, InEuint64, InEuint128 } from "cofhe-contracts/FHE.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title FHERouter
@@ -26,6 +28,8 @@ contract FHERouter {
     
 
     IEncryptedERC20 public collateralToken;
+    /// @notice Plain ERC-20 that gets wrapped into `collateralToken` on the plain-collateral path.
+    IERC20 public underlyingToken;
 
     /// @notice Only supported index token for this router.
     address public immutable indexToken;
@@ -33,9 +37,19 @@ contract FHERouter {
     address public owner;
     FHEFundingRateManager public fheFundingManager;
     mapping(address => PendingOpenRequest) public pendingOpenRequests;
+    /// @notice Tracks positions where the trader requested plain ERC-20 on close.
+    mapping(bytes32 => bool) public plainPayoutRequested;
+    /// @notice Tracks positions where the trader requested encrypted-token payout on close.
+    mapping(bytes32 => bool) public encryptedPayoutRequested;
 
     event OpenPosition(bytes32 indexed positionKey, address indexed trader);
     event ClosePosition(bytes32 indexed positionKey, address indexed trader);
+    event PlainPayoutRequested(bytes32 indexed positionKey, address indexed trader);
+    /// @notice Emitted when a plain-payout close is fully settled (underlying sent to trader).
+    event PlainPayoutSettled(bytes32 indexed positionKey, address indexed trader, uint64 amount);
+    event EncryptedPayoutRequested(bytes32 indexed positionKey, address indexed trader);
+    /// @notice Emitted when an encrypted-payout close is fully settled (encrypted minted to trader).
+    event EncryptedPayoutSettled(bytes32 indexed positionKey, address indexed trader, uint64 amount);
 
     event OrderCreated(
         address indexed trader,
@@ -60,16 +74,18 @@ contract FHERouter {
         address _orderManager,
         address _fheFunding,
         address _collateralToken,
-        address _indexToken
+        address _indexToken,
+        address _underlyingToken
     ) {
         require(_indexToken != address(0), "invalid index token");
-        positionManager = PositionManager(_positionManager);
-        vault           = FHEVault(_vault);
-        orderManager    = FHEOrderManager(_orderManager);
+        positionManager   = PositionManager(_positionManager);
+        vault             = FHEVault(_vault);
+        orderManager      = FHEOrderManager(_orderManager);
         fheFundingManager = FHEFundingRateManager(_fheFunding);
-        collateralToken = IEncryptedERC20(_collateralToken);
-        indexToken      = _indexToken;
-        owner           = msg.sender;
+        collateralToken   = IEncryptedERC20(_collateralToken);
+        indexToken        = _indexToken;
+        underlyingToken   = IERC20(_underlyingToken);
+        owner             = msg.sender;
     }
 
     /**
@@ -156,9 +172,229 @@ contract FHERouter {
         emit OpenPosition(positionId, msg.sender);
     }
 
+    // -----------------------------------------------------------------------
+    // PLAIN COLLATERAL PATH
+    // The router pulls underlying ERC-20 from the user, wraps it into the
+    // encrypted collateral token, then runs the same two-phase open flow.
+    // Prerequisites:
+    //   1. underlyingToken.approve(router, plainCollateral) — user grants router
+    //      permission to pull the plain ERC-20.
+    //   2. collateralToken.setOperator(router, ...) — router must be operator so
+    //      it can call confidentialTransferFrom in Phase 2 (same as encrypted path).
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Phase 1 of the plain-collateral open path.
+     *         Pulls `plainCollateral` underlying ERC-20 from the caller, wraps it
+     *         into an encrypted balance, then submits the vault liquidity check.
+     * @param token           Index token; must equal `indexToken`.
+     * @param plainCollateral Unencrypted collateral amount (underlying ERC-20 units).
+     * @param encLeverage     Encrypted leverage (InEuint64).
+     * @param encIsLong       Encrypted direction (InEbool).
+     */
+    function submitOpenPositionCheckPlain(
+        address   token,
+        uint64    plainCollateral,
+        InEuint64 calldata encLeverage,
+        InEbool   calldata encIsLong
+    ) public {
+        require(token == indexToken, "unsupported index token");
+        require(!pendingOpenRequests[msg.sender].exists, "pending request exists");
+
+        fheFundingManager.updateFunding(token);
+
+        // Pull underlying ERC-20 from user → vault (builds plain reserve for future payouts),
+        // then mint encrypted tokens to user so they can open the position normally.
+        bool ok = underlyingToken.transferFrom(msg.sender, address(vault), plainCollateral);
+        require(ok, "underlying transfer failed");
+        collateralToken.wrap(msg.sender, plainCollateral);
+
+        euint64 eCollateral = FHE.asEuint64(plainCollateral);
+        euint64 eLeverage   = FHE.asEuint64(encLeverage);
+        ebool   eIsLong     = FHE.asEbool(encIsLong);
+        euint64 eSize       = FHE.mul(eCollateral, eLeverage);
+
+        FHE.allow(eCollateral, address(collateralToken));
+        FHE.allow(eCollateral, address(positionManager));
+        FHE.allow(eCollateral, msg.sender);
+        FHE.allow(eSize, address(vault));
+
+        pendingOpenRequests[msg.sender] = PendingOpenRequest({
+            collateralHandle: euint64.unwrap(eCollateral),
+            leverageHandle:   euint64.unwrap(eLeverage),
+            isLongHandle:     ebool.unwrap(eIsLong),
+            exists:           true
+        });
+
+        vault.submitReserveLiquidityCheck(msg.sender, eSize);
+    }
+
+    /**
+     * @notice Phase 2 of the plain-collateral open path.
+     *         Uses the handles stored in Phase 1 — no re-encryption needed.
+     *         Transfers the user's newly wrapped encrypted collateral to the vault
+     *         and opens the position.
+     * @param token        Index token; must equal `indexToken`.
+     * @param hasLiqPlain  Decrypted liquidity-check boolean from the Threshold Network.
+     * @param hasLiqSig    Threshold Network signature for the hasLiq handle.
+     */
+    function finalizeOpenPositionPlain(
+        address token,
+        bool    hasLiqPlain,
+        bytes calldata hasLiqSig
+    ) public returns (bytes32 positionId) {
+        require(token == indexToken, "unsupported index token");
+
+        fheFundingManager.updateFunding(token);
+
+        PendingOpenRequest memory pending = pendingOpenRequests[msg.sender];
+        require(pending.exists, "open check not submitted");
+        delete pendingOpenRequests[msg.sender];
+
+        vault.storeReserveLiquidityProof(msg.sender, hasLiqPlain, hasLiqSig);
+
+        // Reconstruct handles from the values stored in Phase 1.
+        euint64 eCollateral = euint64.wrap(pending.collateralHandle);
+        euint64 eLeverage   = euint64.wrap(pending.leverageHandle);
+        ebool   eIsLong     = ebool.wrap(pending.isLongHandle);
+
+        FHE.allow(eCollateral, address(collateralToken));
+        FHE.allow(eCollateral, address(positionManager));
+        FHE.allow(eCollateral, msg.sender);
+        FHE.allow(eLeverage, address(positionManager));
+        FHE.allow(eLeverage, msg.sender);
+        FHE.allow(eIsLong, address(positionManager));
+        FHE.allow(eIsLong, msg.sender);
+
+        // User holds encrypted tokens (minted by wrap in Phase 1); transfer them to vault.
+        collateralToken.confidentialTransferFrom(msg.sender, address(vault), eCollateral);
+
+        positionId = positionManager.openPositionFHE(msg.sender, token, eCollateral, eLeverage, eIsLong);
+
+        emit OpenPosition(positionId, msg.sender);
+    }
+
     function requestClosePosition(bytes32 positionId) public {
         positionManager.requestClosePosition(msg.sender, positionId);
         emit ClosePosition(positionId, msg.sender);
+    }
+
+    // -----------------------------------------------------------------------
+    // PLAIN PAYOUT PATH (close)
+    // Mirrors the plain-collateral open path.  The owner calls one function
+    // (finalizeClosePlainPayout) which atomically settles the position in PM
+    // and records the redeemable amount.  The trader then calls redeemPlainPayout.
+    //
+    // Why user-supplied amount is dangerous (FHERC20 silent-clamp exploit):
+    //   FHERC20._update clamps an over-spend to 0 instead of reverting (by design,
+    //   to avoid leaking balance information).  If the user could pass any `amount`,
+    //   they could call unwrap(bigNumber) → burns 0 → then receive bigNumber in
+    //   plain ERC-20 for free.
+    //
+    // Flow:
+    //   1. requestClosePlainPayout(positionId)           [user]
+    //   2. router.finalizeClosePlainPayout(positionId, finalAmount, ...)  [owner]
+    //   3. redeemPlainPayout()                           [user]
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Initiates a close and signals intent to receive plain ERC-20 on settlement.
+     * @param positionId Position to close.
+     */
+    function requestClosePlainPayout(bytes32 positionId) public {
+        plainPayoutRequested[positionId] = true;
+        requestClosePosition(positionId);
+        emit PlainPayoutRequested(positionId, msg.sender);
+    }
+
+    /**
+     * @notice Atomically settles a plain-payout close and transfers plain ERC-20 to the trader.
+     *
+     *         The vault unwraps `finalAmount` encrypted tokens from its own balance and sends
+     *         the equivalent underlying ERC-20 directly to the trader — no second call needed.
+     *
+     *         Prerequisite: vault must hold sufficient underlying ERC-20 reserve.
+     *         For plain-opened positions this reserve is funded automatically (underlying was
+     *         deposited to the vault on open).  For encrypted-opened positions the vault must
+     *         have accumulated reserve from other plain-opens or admin deposits.
+     */
+    function finalizeClosePlainPayout(
+        bytes32 positionId,
+        uint256 finalAmount,
+        bytes calldata finalAmountSig,
+        uint256 sizePlain,
+        bytes calldata sizeSig,
+        uint256 collateralPlain,
+        bytes calldata collateralSig,
+        bool isLongPlain
+    ) external onlyOwner {
+        require(plainPayoutRequested[positionId], "not a plain payout position");
+        address trader = positionManager.getPositionOwner(positionId);
+        delete plainPayoutRequested[positionId];
+
+        // vault.payTraderPlain burns encrypted from vault + sends underlying to trader.
+        positionManager.finalizeClosePositionPlain(
+            positionId, finalAmount, finalAmountSig,
+            sizePlain, sizeSig, collateralPlain, collateralSig, isLongPlain
+        );
+
+        emit PlainPayoutSettled(positionId, trader, uint64(finalAmount));
+    }
+
+    // -----------------------------------------------------------------------
+    // ENCRYPTED PAYOUT PATH (close)
+    // Mirror of the plain-payout path for plain-opened positions that want
+    // their settlement in encrypted tokens instead of underlying ERC-20.
+    //
+    // Flow:
+    //   1. requestCloseEncryptedPayout(positionId)              [user]
+    //   2. router.finalizeCloseEncryptedPayout(positionId, ...) [owner]
+    //      └─ pm.finalizeClosePositionWrapped(...)
+    //         └─ vault.payTraderWrapped(trader, profit, collateral)
+    //            ├─ burns finalAmount encrypted from vault's own balance
+    //            └─ wraps finalAmount into fresh encrypted tokens → minted to trader
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Initiates a close and signals intent to receive encrypted tokens on settlement.
+     * @param positionId Position to close.
+     */
+    function requestCloseEncryptedPayout(bytes32 positionId) public {
+        encryptedPayoutRequested[positionId] = true;
+        requestClosePosition(positionId);
+        emit EncryptedPayoutRequested(positionId, msg.sender);
+    }
+
+    /**
+     * @notice Atomically settles an encrypted-payout close.
+     *
+     *         No re-wrapping needed: the vault already holds the encrypted tokens that
+     *         were deposited during the plain-open (wrap happened there).
+     *         vault.payTrader sends those existing encrypted tokens directly to the trader
+     *         via confidentialTransfer — the underlying ERC-20 stays in the vault as reserve
+     *         for future plain-payout requests.
+     */
+    function finalizeCloseEncryptedPayout(
+        bytes32 positionId,
+        uint256 finalAmount,
+        bytes calldata finalAmountSig,
+        uint256 sizePlain,
+        bytes calldata sizeSig,
+        uint256 collateralPlain,
+        bytes calldata collateralSig,
+        bool isLongPlain
+    ) external onlyOwner {
+        require(encryptedPayoutRequested[positionId], "not an encrypted payout position");
+        address trader = positionManager.getPositionOwner(positionId);
+        delete encryptedPayoutRequested[positionId];
+
+        // Reuses finalizeClosePosition — vault.payTrader sends existing encrypted to trader.
+        positionManager.finalizeClosePosition(
+            positionId, finalAmount, finalAmountSig,
+            sizePlain, sizeSig, collateralPlain, collateralSig, isLongPlain
+        );
+
+        emit EncryptedPayoutSettled(positionId, trader, uint64(finalAmount));
     }
 
     /**

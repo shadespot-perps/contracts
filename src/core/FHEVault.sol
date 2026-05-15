@@ -4,6 +4,7 @@ pragma solidity ^0.8.25;
 import "./IVault.sol";
 import "../tokens/IEncryptedERC20.sol";
 import "../tokens/IEncryptedLPToken.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { FHE, euint64, euint128, ebool } from "cofhe-contracts/FHE.sol";
 
@@ -15,6 +16,8 @@ contract FHEVault is IVault {
 
     IEncryptedERC20    public immutable collateralToken;
     IEncryptedLPToken  public lpToken;
+    /// @notice Plain ERC-20 that backs the encrypted collateral for plain-payout closes.
+    IERC20             public underlyingToken;
 
     address public positionManager;
     address public router;
@@ -84,8 +87,10 @@ contract FHEVault is IVault {
 
     constructor(address _token, address _owner) {
         collateralToken = IEncryptedERC20(_token);
- 
         owner = _owner;
+        // Vault sets itself as operator so it can call unwrap(address(this), amount)
+        // in payTraderPlain — burns encrypted from vault's own balance.
+        collateralToken.setOperator(address(this), type(uint48).max);
     }
 
     function setPositionManager(address _pm) external onlyOwner {
@@ -103,6 +108,11 @@ contract FHEVault is IVault {
         lpToken = IEncryptedLPToken(_lpToken);
     }
 
+    function setUnderlyingToken(address _underlying) external onlyOwner {
+        require(address(underlyingToken) == address(0), "Already set");
+        underlyingToken = IERC20(_underlying);
+    }
+
     // --------------------------------------------------------
     // LP FUNCTIONS
     // --------------------------------------------------------
@@ -116,10 +126,6 @@ contract FHEVault is IVault {
      */
     function deposit(address lp, euint64 eAmount) external onlyRouter {
         euint64 shares;
-   require(
-    euint64.unwrap(pendingDeposit[lp]) == bytes32(0),
-    "Pending deposit exists"
-      );
         if (!initialized) {
             shares = eAmount;
             initialized = true;
@@ -332,6 +338,38 @@ contract FHEVault is IVault {
         collateralToken.confidentialTransfer(user, ePayout);
 
         emit PayOut(user, euint64.unwrap(ePayout));
+    }
+
+    /**
+     * @notice Settles a plain-payout close: burns `total` encrypted from the vault's own
+     *         balance and transfers the equivalent plain ERC-20 directly to the trader.
+     *         Requires the vault to hold sufficient underlying (accumulated from plain-opens).
+     * @dev Vault must be set as its own operator on collateralToken (done in constructor).
+     */
+    function payTraderPlain(address user, uint256 profit, uint256 returnedCollateral)
+        external
+        onlyPositionManager
+    {
+        uint256 total = profit + returnedCollateral;
+        require(address(underlyingToken) != address(0), "underlying not set");
+        require(underlyingToken.balanceOf(address(this)) >= total, "insufficient underlying reserve");
+
+        if (profit > 0) {
+            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(profit)));
+            FHE.allow(totalLiquidity, address(this));
+        }
+        if (returnedCollateral > 0) {
+            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(returnedCollateral)));
+            FHE.allow(totalLiquidity, address(this));
+        }
+
+        // Burn the encrypted tokens from the vault's balance (unwrap from self).
+        collateralToken.unwrap(address(this), uint64(total));
+        // Send plain ERC-20 directly to user.
+        bool ok = underlyingToken.transfer(user, total);
+        require(ok, "underlying transfer failed");
+
+        emit PayOut(user, bytes32(0));
     }
 
     function receiveLoss(uint256 amount) external onlyPositionManager {

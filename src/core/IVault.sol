@@ -10,6 +10,7 @@ interface IVault {
     function reserveLiquidity(address trader) external;
     function releaseLiquidity(uint256 amount) external;
     function payTrader(address user, uint256 profit, uint256 returnedCollateral) external;
+    function payTraderPlain(address user, uint256 profit, uint256 returnedCollateral) external;
     function receiveLoss(uint256 amount) external;
     function refundCollateral(address user, uint256 amount) external;
     function deposit(address lp, uint256 amount) external;
