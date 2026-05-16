@@ -207,6 +207,7 @@ contract FHERouter {
         // then mint encrypted tokens to user so they can open the position normally.
         bool ok = underlyingToken.transferFrom(msg.sender, address(vault), plainCollateral);
         require(ok, "underlying transfer failed");
+        vault.recordPlainDeposit(plainCollateral);
         collateralToken.wrap(msg.sender, plainCollateral);
 
         euint64 eCollateral = FHE.asEuint64(plainCollateral);
@@ -524,6 +525,22 @@ contract FHERouter {
     }
 
     /**
+     * @notice Adds underlying ERC-20 directly as liquidity.
+     *         Vault wraps it into encrypted and issues LP shares, building the plain
+     *         reserve that funds plain-close payouts for any position (including
+     *         encrypted-opened ones).
+     * @dev Caller must approve this router on underlyingToken first.
+     * @param amount Plain underlying amount to deposit.
+     */
+    function addLiquidityPlain(uint256 amount) external {
+        require(address(underlyingToken) != address(0), "underlying not configured");
+        bool ok = underlyingToken.transferFrom(msg.sender, address(vault), amount);
+        require(ok, "underlying transfer failed");
+        vault.depositPlain(msg.sender, amount);
+        emit AddLiquidity(msg.sender, bytes32(0));
+    }
+
+    /**
      * @notice Phase 1 of liquidity removal. Submits encrypted withdrawal checks.
      * @param shares Standard share amount to redeem.
      */
@@ -550,6 +567,33 @@ contract FHERouter {
             msg.sender, shares, balPlain, balSig, liqPlain, liqSig
         );
         emit RemoveLiquidity(msg.sender, amountHandle);
+    }
+
+    /**
+     * @notice Phase 2 of plain liquidity removal. Verifies proofs and sends underlying ERC-20.
+     *         LP must have submitted a withdrawal check first and decrypted the amountHandle
+     *         emitted by `WithdrawCheckSubmitted`.
+     * @param shares      Must match the value passed to submitLiquidityWithdrawalCheck.
+     * @param balPlain    Decrypted balance-check boolean.
+     * @param balSig      Threshold Network signature for hasBal.
+     * @param liqPlain    Decrypted liquidity-check boolean.
+     * @param liqSig      Threshold Network signature for hasLiq.
+     * @param amountPlain Decrypted withdrawal amount from the amountHandle.
+     * @param amountSig   Threshold Network signature for eAmount.
+     */
+    function finalizeLiquidityWithdrawalPlain(
+        uint256 shares,
+        bool    balPlain,
+        bytes calldata balSig,
+        bool    liqPlain,
+        bytes calldata liqSig,
+        uint64  amountPlain,
+        bytes calldata amountSig
+    ) public {
+        vault.finalizeWithdrawalPlainWithProof(
+            msg.sender, shares, balPlain, balSig, liqPlain, liqSig, amountPlain, amountSig
+        );
+        emit RemoveLiquidity(msg.sender, bytes32(0));
     }
 
     // Backward-compatible aliases for existing integrations.

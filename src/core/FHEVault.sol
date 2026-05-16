@@ -25,6 +25,7 @@ contract FHEVault is IVault {
 
     euint64 public totalLiquidity;
     euint64 public totalReserved;
+    uint256 public plainUnderlyingReserve;
 
     euint64 public encryptedTotalSupply;
     mapping(address => euint64) public lpBalance;
@@ -67,6 +68,7 @@ contract FHEVault is IVault {
         address indexed lp,
         bytes32 hasBalHandle,
         bytes32 hasLiqHandle,
+        bytes32 amountHandle,
         uint256 shares
     );
 
@@ -160,6 +162,51 @@ contract FHEVault is IVault {
     }
 
     /**
+     * @notice LP deposits underlying ERC-20 directly.
+     *         Vault wraps it (mints encrypted to itself) and issues LP shares,
+     *         building a plain reserve that funds any plain-close payout regardless
+     *         of whether the position was plain-opened or encrypted-opened.
+     * @dev Router must transferFrom(lp → vault) before calling this.
+     * @param lp     LP address receiving shares.
+     * @param amount Plain underlying amount already in the vault.
+     */
+    function depositPlain(address lp, uint256 amount) external onlyRouter {
+        require(address(underlyingToken) != address(0), "underlying not set");
+
+        plainUnderlyingReserve += amount;
+
+        // Mint encrypted to vault itself so its encrypted balance can settle plain-close payouts.
+        collateralToken.wrap(address(this), uint64(amount));
+
+        euint64 eAmount = FHE.asEuint64(uint64(amount));
+        FHE.allow(eAmount, address(this));
+
+        euint64 shares;
+        if (!initialized) {
+            shares = eAmount;
+            initialized = true;
+        } else {
+            shares = FHE.div(FHE.mul(eAmount, encryptedTotalSupply), totalLiquidity);
+        }
+
+        lpBalance[lp]          = FHE.add(lpBalance[lp], shares);
+        encryptedTotalSupply    = FHE.add(encryptedTotalSupply, shares);
+        totalLiquidity          = FHE.add(totalLiquidity, eAmount);
+
+        FHE.allow(lpBalance[lp],        address(this));
+        FHE.allow(encryptedTotalSupply, address(this));
+        FHE.allow(totalLiquidity,       address(this));
+        FHE.allow(lpBalance[lp],        lp);
+
+        if (address(lpToken) != address(0)) {
+            FHE.allow(shares, address(lpToken));
+            lpToken.mint(lp, shares);
+        }
+
+        emit Deposit(lp, euint64.unwrap(eAmount));
+    }
+
+    /**
      * @notice Phase 1 of withdrawal: compute encrypted balance/liquidity checks and store handles.
      *         Off-chain clients decrypt emitted handles, then call `finalizeWithdrawalWithProof`.
      * @param lp     LP address.
@@ -179,12 +226,13 @@ contract FHEVault is IVault {
         FHE.allow(hasBal,  address(this));
         FHE.allow(hasBal,  lp);
         FHE.allow(eAmount, address(this));
+        FHE.allow(eAmount, lp);
         FHE.allow(hasLiq,  address(this));
         FHE.allow(hasLiq,  lp);
 
         pendingWithdraw[lp] = PendingWithdraw(hasBal, hasLiq, eAmount, shares);
 
-        emit WithdrawCheckSubmitted(lp, ebool.unwrap(hasBal), ebool.unwrap(hasLiq), shares);
+        emit WithdrawCheckSubmitted(lp, ebool.unwrap(hasBal), ebool.unwrap(hasLiq), euint64.unwrap(eAmount), shares);
     }
 
     /**
@@ -240,6 +288,67 @@ contract FHEVault is IVault {
 
         amountHandle = euint64.unwrap(eAmount);
         emit Withdraw(lp, amountHandle);
+    }
+
+    /**
+     * @notice Phase 2 of plain withdrawal: verify proofs and send underlying ERC-20 to LP.
+     *         LP supplies the decrypted withdrawal amount with its CoFHE signature so the
+     *         vault can unwrap the equivalent encrypted balance and transfer the underlying.
+     * @param lp          LP redeeming shares.
+     * @param shares      Must match the value passed to `submitWithdrawalCheck`.
+     * @param balPlain    Decrypted balance-check boolean.
+     * @param balSig      CoFHE signature for hasBal.
+     * @param liqPlain    Decrypted liquidity-check boolean.
+     * @param liqSig      CoFHE signature for hasLiq.
+     * @param amountPlain Decrypted withdrawal amount (from the amountHandle emitted by submitWithdrawalCheck).
+     * @param amountSig   CoFHE signature for eAmount.
+     */
+    function finalizeWithdrawalPlainWithProof(
+        address lp,
+        uint256 shares,
+        bool    balPlain,
+        bytes calldata balSig,
+        bool    liqPlain,
+        bytes calldata liqSig,
+        uint64  amountPlain,
+        bytes calldata amountSig
+    ) public onlyRouter {
+        require(address(underlyingToken) != address(0), "underlying not set");
+
+        PendingWithdraw storage pw = pendingWithdraw[lp];
+        require(pw.shares == shares && pw.shares > 0, "No pending withdraw or shares mismatch");
+
+        require(FHE.verifyDecryptResult(pw.hasBal, balPlain, balSig), "Invalid bal decrypt");
+        require(balPlain, "Insufficient shares");
+
+        require(FHE.verifyDecryptResult(pw.hasLiq, liqPlain, liqSig), "Invalid liq decrypt");
+        require(liqPlain, "Liquidity locked");
+
+        FHE.publishDecryptResult(pw.eAmount, amountPlain, amountSig);
+        require(plainUnderlyingReserve >= amountPlain, "insufficient plain reserve");
+
+        euint64 eShares = FHE.asEuint64(uint64(shares));
+        delete pendingWithdraw[lp];
+
+        lpBalance[lp]        = FHE.sub(lpBalance[lp], eShares);
+        encryptedTotalSupply  = FHE.sub(encryptedTotalSupply, eShares);
+        totalLiquidity        = FHE.sub(totalLiquidity, FHE.asEuint64(amountPlain));
+
+        FHE.allow(lpBalance[lp],       address(this));
+        FHE.allow(encryptedTotalSupply, address(this));
+        FHE.allow(totalLiquidity,       address(this));
+
+        if (address(lpToken) != address(0)) {
+            FHE.allow(eShares, address(lpToken));
+            lpToken.burn(lp, eShares);
+        }
+
+        plainUnderlyingReserve -= amountPlain;
+        collateralToken.unwrap(address(this), amountPlain);
+        bool ok = underlyingToken.transfer(lp, amountPlain);
+        require(ok, "underlying transfer failed");
+
+        emit Withdraw(lp, bytes32(0));
     }
 
     function withdraw(address, uint256) external pure override returns (uint256) {
@@ -323,12 +432,9 @@ contract FHEVault is IVault {
     {
         uint256 total = profit + returnedCollateral;
 
+        // Only profit is LP-owned — returnedCollateral was never added to totalLiquidity.
         if (profit > 0) {
             totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(profit)));
-            FHE.allow(totalLiquidity, address(this));
-        }
-        if (returnedCollateral > 0) {
-            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(returnedCollateral)));
             FHE.allow(totalLiquidity, address(this));
         }
 
@@ -352,20 +458,17 @@ contract FHEVault is IVault {
     {
         uint256 total = profit + returnedCollateral;
         require(address(underlyingToken) != address(0), "underlying not set");
-        require(underlyingToken.balanceOf(address(this)) >= total, "insufficient underlying reserve");
+        // Guard against reserve depletion; reserve is funded by plain-opens and absorbed losses.
+        require(plainUnderlyingReserve >= total, "insufficient plain reserve");
 
+        // Only profit is LP-owned — returnedCollateral was never added to totalLiquidity.
         if (profit > 0) {
             totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(profit)));
             FHE.allow(totalLiquidity, address(this));
         }
-        if (returnedCollateral > 0) {
-            totalLiquidity = FHE.sub(totalLiquidity, FHE.asEuint64(uint64(returnedCollateral)));
-            FHE.allow(totalLiquidity, address(this));
-        }
 
-        // Burn the encrypted tokens from the vault's balance (unwrap from self).
+        plainUnderlyingReserve -= total;
         collateralToken.unwrap(address(this), uint64(total));
-        // Send plain ERC-20 directly to user.
         bool ok = underlyingToken.transfer(user, total);
         require(ok, "underlying transfer failed");
 
@@ -377,6 +480,11 @@ contract FHEVault is IVault {
         totalLiquidity = FHE.add(totalLiquidity, eAmount);
         FHE.allow(totalLiquidity, address(this));
         emit ReceiveLoss(euint64.unwrap(eAmount));
+    }
+
+    /// @notice Records underlying deposited by a plain-open so payTraderPlain has reserve.
+    function recordPlainDeposit(uint256 amount) external onlyRouter {
+        plainUnderlyingReserve += amount;
     }
 
     /**
