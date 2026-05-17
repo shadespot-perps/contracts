@@ -37,15 +37,15 @@ Text overview (same structure as the diagram):
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        TRADER / LP                                  │
-│         plain ERC-20 OR encrypted FHERC20 — both supported         │
+│         plain ERC-20 OR encrypted FHERC20 — both supported          │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │  setOperator once (replaces approve)
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        FHERouter.sol                                │
 │           Primary entry-point — routes all user actions             │
-│  openPosition │ openPositionPlain │ closePosition │ closePlainPayout │
-│  addLiquidity │ addLiquidityPlain │ createOrder                      │
+│ openPosition │ openPositionPlain │ closePosition │ closePlainPayout │
+│ addLiquidity │ addLiquidityPlain │ createOrder                      │
 └──────┬──────────────┬────────────────┬──────────────────┬───────────┘
        │              │                │                  │
        ▼              ▼                ▼                  ▼
@@ -62,9 +62,9 @@ Text overview (same structure as the diagram):
 ┌──────────────┐│              ▼
 │EncryptedLP   ││   ┌──────────────┐   ┌──────────────┐
 │Token (SLP)   ││   │PriceOracle   │   │Liquidation   │
-│euint64 shares│││   │(public price)│   │Manager       │
-│mint/burn/    │││   │              │   │(ebool canLiq)│
-│transfer      │└─►  └──────────────┘   └──────────────┘
+│euint64 shares│││  │(public price)│   │Manager       │
+│mint/burn/    │││  │              │   │(ebool canLiq)│
+│transfer      │└─► └──────────────┘   └──────────────┘
 └──────────────┘
 ```
 
@@ -311,11 +311,11 @@ The liquidity pool uses encrypted accounting throughout. LPs cannot be targeted 
   │                                                                  │
   │  addLiquidity(eAmount)     FHERC20 euint64 → vault               │
   │  addLiquidityPlain(amount) plain ERC-20 → vault wraps to euint64 │
-  │    └─ plainUnderlyingReserve += amount (funds plain-close payouts)│
+  │   └─ plainUnderlyingReserve += amount (funds plain-close payouts)│
   │                                                                  │
   │  Share issuance (fully encrypted):                               │
   │  eShares = FHE.div(FHE.mul(eAmount, eTotalSupply), eTotalLiq)    │
-  │  lpToken.mint(lp, eShares)  ← Mint event emits bytes32 handle   │
+  │   lpToken.mint(lp, eShares)  ← Mint event emits bytes32 handle   │
   │                                no readable amount ever emitted   │
   │                                                                  │
   │  Withdraw Flow (2-phase):                                        │
@@ -384,11 +384,11 @@ Every combination of plain ERC-20 and encrypted collateral is supported across o
   ┌─────────────────────────────────────────────────────────────────┐
   │ submitDecryptTaskForOpen → openPosition          encrypted open │
   │ submitOpenPositionCheckPlain → finalizeOpenPositionPlain        │
-  │                                                   plain open   │
+  │                                                    plain open   │
   │ requestClosePosition → finalizeClosePosition    encrypted close │
   │ requestClosePlainPayout → finalizeClosePlainPayout  plain close │
   │ requestCloseEncryptedPayout → finalizeCloseEncryptedPayout      │
-  │                               plain-open → encrypted payout    │
+  │                                plain-open → encrypted payout    │
   └─────────────────────────────────────────────────────────────────┘
 ```
 
