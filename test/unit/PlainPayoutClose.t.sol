@@ -158,6 +158,15 @@ contract PlainPayoutCloseTest is Test {
         );
     }
 
+    /// Mint underlying to vault AND record it in plainUnderlyingReserve.
+    /// Use this instead of `underlying.mint(address(vault), X)` so payTraderPlain's
+    /// reserve check passes.
+    function _fundReserve(uint256 amount) internal {
+        underlying.mint(address(vault), amount);
+        vm.prank(address(router));
+        vault.recordPlainDeposit(amount);
+    }
+
     /// Close via standard encrypted path (no plain payout).
     function _closeEncrypted(address t, bytes32 posId, uint64 finalAmt) internal {
         vm.prank(t);
@@ -230,7 +239,7 @@ contract PlainPayoutCloseTest is Test {
         router.requestClosePlainPayout(lastPosId);
 
         // Fund vault so the payout can complete.
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
 
         router.finalizeClosePlainPayout(
             lastPosId, uint256(COLLATERAL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true
@@ -244,7 +253,7 @@ contract PlainPayoutCloseTest is Test {
         vm.prank(encTrader);
         router.requestClosePlainPayout(lastPosId);
 
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
 
         router.finalizeClosePlainPayout(
             lastPosId, uint256(COLLATERAL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true
@@ -259,7 +268,7 @@ contract PlainPayoutCloseTest is Test {
         vm.prank(encTrader);
         router.requestClosePlainPayout(lastPosId);
 
-        vm.expectRevert("insufficient underlying reserve");
+        vm.expectRevert("insufficient plain reserve");
         router.finalizeClosePlainPayout(
             lastPosId, uint256(COLLATERAL), "", uint256(SIZE), "", uint256(COLLATERAL), "", true
         );
@@ -274,7 +283,7 @@ contract PlainPayoutCloseTest is Test {
 
     function test_PlainClose_EncOpen_BreakEven_TraderReceivesPlain() public {
         _openEncrypted(encTrader, true);
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
         _closePlain(encTrader, lastPosId, COLLATERAL);
 
         assertEq(underlying.balanceOf(encTrader), COLLATERAL);
@@ -282,7 +291,7 @@ contract PlainPayoutCloseTest is Test {
 
     function test_PlainClose_EncOpen_BreakEven_VaultUnderlyingDepleted() public {
         _openEncrypted(encTrader, true);
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
         _closePlain(encTrader, lastPosId, COLLATERAL);
 
         assertEq(underlying.balanceOf(address(vault)), 0);
@@ -292,7 +301,7 @@ contract PlainPayoutCloseTest is Test {
         (uint64 balBefore, ) = FHE.getDecryptResultSafe(fheToken.confidentialBalanceOf(encTrader));
 
         _openEncrypted(encTrader, true);
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
         _closePlain(encTrader, lastPosId, COLLATERAL);
 
         (uint64 balAfter, ) = FHE.getDecryptResultSafe(fheToken.confidentialBalanceOf(encTrader));
@@ -304,7 +313,7 @@ contract PlainPayoutCloseTest is Test {
     function test_PlainClose_EncOpen_Profit_TraderReceivesPlain() public {
         _openEncrypted(encTrader, true);
         oracle.setPrice(ethToken, PRICE_UP);
-        underlying.mint(address(vault), COLLATERAL + PNL);
+        _fundReserve(COLLATERAL + PNL);
         _closePlain(encTrader, lastPosId, COLLATERAL + PNL);
 
         assertEq(underlying.balanceOf(encTrader), COLLATERAL + PNL);
@@ -313,7 +322,7 @@ contract PlainPayoutCloseTest is Test {
     function test_PlainClose_EncOpen_Loss_TraderReceivesReducedPlain() public {
         _openEncrypted(encTrader, true);
         oracle.setPrice(ethToken, PRICE_DOWN);
-        underlying.mint(address(vault), COLLATERAL - PNL);
+        _fundReserve(COLLATERAL - PNL);
         _closePlain(encTrader, lastPosId, COLLATERAL - PNL);
 
         assertEq(underlying.balanceOf(encTrader), COLLATERAL - PNL);
@@ -321,7 +330,7 @@ contract PlainPayoutCloseTest is Test {
 
     function test_PlainClose_EncOpen_PositionDeletedAfterClose() public {
         _openEncrypted(encTrader, true);
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
         _closePlain(encTrader, lastPosId, COLLATERAL);
 
         assertFalse(pm.positionExists(lastPosId));
@@ -329,7 +338,7 @@ contract PlainPayoutCloseTest is Test {
 
     function test_PlainClose_EncOpen_EmitsPlainPayoutSettled() public {
         _openEncrypted(encTrader, true);
-        underlying.mint(address(vault), COLLATERAL);
+        _fundReserve(COLLATERAL);
 
         vm.prank(encTrader);
         router.requestClosePlainPayout(lastPosId);
@@ -358,7 +367,7 @@ contract PlainPayoutCloseTest is Test {
         _openPlain(plainTrader, true);
         oracle.setPrice(ethToken, PRICE_UP);
         // LP vault funds the extra profit.
-        underlying.mint(address(vault), PNL);
+        _fundReserve(PNL);
         _closePlain(plainTrader, lastPosId, COLLATERAL + PNL);
 
         uint256 net = underlying.balanceOf(plainTrader) - (COLLATERAL * 10 - COLLATERAL);

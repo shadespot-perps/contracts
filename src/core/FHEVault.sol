@@ -209,7 +209,7 @@ contract FHEVault is IVault {
     /**
      * @notice Phase 1 of withdrawal: compute encrypted balance/liquidity checks and store handles.
      *         Off-chain clients decrypt emitted handles, then call `finalizeWithdrawalWithProof`.
-     * @param lp     LP address.
+     * @param lp     LP address .
      * @param shares Standard share amount to redeem.
      */
     function submitWithdrawalCheck(address lp, uint256 shares) public onlyRouter {
