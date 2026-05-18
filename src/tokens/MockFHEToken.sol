@@ -34,4 +34,18 @@ contract MockFHEToken is FHERC20 {
     function burn(address from, uint64 amount) external {
         _burn(from, amount);
     }
+
+    /// @notice Wraps a plain amount into an encrypted balance for `to`.
+    ///         In production this would pull the underlying ERC-20 first;
+    ///         here the router does that pull before calling this.
+    function wrap(address to, uint64 amount) external {
+        _mint(to, amount);
+    }
+
+    /// @notice Burns `amount` encrypted tokens from `from`.
+    ///         Caller must be an active operator for `from`.
+    function unwrap(address from, uint64 amount) external {
+        require(isOperator(from, msg.sender), "not operator");
+        _burn(from, amount);
+    }
 }

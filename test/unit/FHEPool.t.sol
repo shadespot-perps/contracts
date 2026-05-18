@@ -109,7 +109,8 @@ contract FHEPoolTest is Test {
             address(om),
             address(fheFRM),
             address(fheToken),
-            ethToken
+            ethToken,
+            address(fheToken) // stub: plain path not exercised in these tests
         );
 
         // Wire contracts
