@@ -15,6 +15,8 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
 | LP pool depth exposed → adversarial liquidity timing | `totalLiquidity` and `totalReserved` are `euint64` — never plaintext |
 | Order prices visible → order books are frontrunnable | Trigger prices stored as `euint128` ciphertexts; keeper compares in FHE |
 | Funding rate reveals long/short dominance | Open interest tracked encrypted; rate derived without exposing OI |
+| Plain ERC-20 users excluded from privacy | Router wraps plain tokens into FHE ciphertexts on-chain — position is indistinguishable from a fully encrypted open |
+| LP ownership proportions observable on-chain | LP shares issued as `euint64` ciphertexts via `EncryptedLPToken`; pool ownership never exposed |
 
 ---
 
@@ -34,9 +36,16 @@ Text overview (same structure as the diagram):
                             │  setOperator once (replaces approve)
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
+│                        TRADER / LP                                  │
+│         plain ERC-20 OR encrypted FHERC20 — both supported          │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │  setOperator once (replaces approve)
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
 │                        FHERouter.sol                                │
 │           Primary entry-point — routes all user actions             │
-│   openPosition │ closePosition │ addLiquidity │ createOrder         │
+│ openPosition │ openPositionPlain │ closePosition │ closePlainPayout │
+│ addLiquidity │ addLiquidityPlain │ createOrder                      │
 └──────┬──────────────┬────────────────┬──────────────────┬───────────┘
        │              │                │                  │
        ▼              ▼                ▼                  ▼
@@ -46,16 +55,17 @@ Text overview (same structure as the diagram):
 │euint64     │  │euint128 size │  │euint128      │  │euint128      │
 │totalLiq    │  │euint128 coll │  │triggerPrice  │  │eLongOI       │
 │totalReserve│  │euint128 entry│  │euint64 coll  │  │eShortOI      │
-│lpBalances  │  │ebool isLong  │  │ebool isLong  │  │eCumFundRate  │
-└────────────┘  └──────┬───────┘  └──────────────┘  └──────────────┘
-                       │
-              ┌────────┴────────┐
-              ▼                 ▼
-    ┌──────────────┐   ┌──────────────┐
-    │PriceOracle   │   │Liquidation   │
-    │(public price)│   │Manager       │
-    │              │   │(ebool canLiq)│
-    └──────────────┘   └──────────────┘
+│plainReserve│  │ebool isLong  │  │ebool isLong  │  │eCumFundRate  │
+└─────┬──────┘  └──────┬───────┘  └──────────────┘  └──────────────┘
+      │                │
+      ▼         ┌──────┴────────┐
+┌──────────────┐│              ▼
+│EncryptedLP   ││   ┌──────────────┐   ┌──────────────┐
+│Token (SLP)   ││   │PriceOracle   │   │Liquidation   │
+│euint64 shares│││  │(public price)│   │Manager       │
+│mint/burn/    │││  │              │   │(ebool canLiq)│
+│transfer      │└─► └──────────────┘   └──────────────┘
+└──────────────┘
 ```
 
 ### Opening a position (market order flow)
@@ -283,38 +293,154 @@ Order parameters — including trigger price, collateral, leverage, and directio
 
 ## Feature 7 — Encrypted LP Vault
 
-The liquidity pool uses encrypted accounting throughout. LPs cannot be targeted based on observable vault depth.
+The liquidity pool uses encrypted accounting throughout. LPs cannot be targeted based on observable vault depth. LP shares are issued as `euint64` ciphertexts via `EncryptedLPToken` — pool ownership proportions are never computable by a third party.
 
 ```
   Vault Internal State:
 
-  totalLiquidity  euint64  ████████████████  ← total pool size, hidden
-  totalReserved   euint64  ████████████████  ← reserved for open positions, hidden
-  lpBalance[addr] euint64  ████████████████  ← per-LP share, hidden
+  totalLiquidity       euint64  ████████████████  ← total pool size, hidden
+  totalReserved        euint64  ████████████████  ← reserved for open positions, hidden
+  plainUnderlyingReserve uint256  (public)        ← plain-payout capacity; no per-LP detail
+
+  EncryptedLPToken (SLP) state:
+  encryptedBalanceOf[addr] euint64  ████████████  ← per-LP shares, hidden
+  encryptedTotalSupply     euint64  ████████████  ← total shares, hidden
 
   ┌──────────────────────────────────────────────────────────────────┐
-  │  Deposit Flow (encrypted share minting):                         │
-  │  eShares = (eAmount × eTotalSupply) / eTotalLiquidity            │
-  │  No LP ERC-20 token; shares stored as encrypted euint64          │
+  │  Deposit Flow — two paths, identical share output:               │
+  │                                                                  │
+  │  addLiquidity(eAmount)     FHERC20 euint64 → vault               │
+  │  addLiquidityPlain(amount) plain ERC-20 → vault wraps to euint64 │
+  │   └─ plainUnderlyingReserve += amount (funds plain-close payouts)│
+  │                                                                  │
+  │  Share issuance (fully encrypted):                               │
+  │  eShares = FHE.div(FHE.mul(eAmount, eTotalSupply), eTotalLiq)    │
+  │   lpToken.mint(lp, eShares)  ← Mint event emits bytes32 handle   │
+  │                                no readable amount ever emitted   │
   │                                                                  │
   │  Withdraw Flow (2-phase):                                        │
-  │  1. submitWithdrawCheck → compute hasBal & hasLiq (ebool)        │
-  │  2. off-chain decrypt → (canWithdraw, proof)                     │
-  │  3. withdrawWithProof  → verify proof, transfer encrypted amount │
+  │  Phase 1: submitWithdrawalCheck → hasBal & hasLiq (ebool)        │
+  │  Phase 2a: finalizeWithdrawalWithProof → confidentialTransfer    │
+  │  Phase 2b: finalizeWithdrawalPlainWithProof → plain ERC-20       │
+  │            drawn from plainUnderlyingReserve                     │
   └──────────────────────────────────────────────────────────────────┘
 
   Three-Phase Liquidity Reservation (on open):
 
-  Phase 1 ─ submitReserveLiquidityCheck()
+  Phase 1 ─ submitOpenLiquidityCheck()
     hasLiq = FHE.gte(totalLiquidity − totalReserved, eRequiredSize)
     emit handle
 
-  Phase 2 ─ storeReserveLiquidityProof()
+  Phase 2 ─ confirmOpenLiquidityCheck()
     verify CoFHE proof, store encrypted approval
 
-  Phase 3 ─ reserveLiquidity()
+  Phase 3 ─ consumeOpenLiquidityApproval()
     consume approval, increment totalReserved (all encrypted)
     no plaintext size ever crosses a contract boundary
+```
+
+---
+
+## Feature 9 — Composable Open and Close Paths
+
+Every combination of plain ERC-20 and encrypted collateral is supported across open and close. All four paths produce identical `PositionManager` storage — an observer cannot tell which was used.
+
+```
+  Four supported paths:
+
+  ┌────────────────────────────────────────────────────────────────────┐
+  │ Path                    │ Open collateral   │ Close settlement     │
+  ├────────────────────────────────────────────────────────────────────┤
+  │ enc-open  / enc-close   │ FHERC20 euint64   │ encrypted euint64    │
+  │ enc-open  / plain-close │ FHERC20 euint64   │ plain ERC-20         │
+  │ plain-open / enc-close  │ plain ERC-20 →    │ encrypted euint64    │
+  │                         │ wrapped on-chain  │                      │
+  │ plain-open / plain-close│ plain ERC-20 →    │ plain ERC-20         │
+  │                         │ wrapped on-chain  │                      │
+  └────────────────────────────────────────────────────────────────────┘
+
+  The critical invariant — plain-open is NOT a plain position:
+
+  Phase A ─ submitOpenPositionCheckPlain(token, plainCollateral, encLev, encIsLong)
+    ├─ underlyingToken.transferFrom(trader → vault)
+    ├─ collateralToken.wrap(vault, amount)   ← plain ERC-20 encrypted on-chain
+    ├─ FHE.asEuint64(amount) stored as eCollateral
+    └─ vault.submitOpenLiquidityCheck()      emit handle for off-chain decrypt
+
+  Phase B ─ finalizeOpenPositionPlain(token, hasLiqPlain, hasLiqSig)
+    ├─ vault.confirmOpenLiquidityCheck()     verify CoFHE proof
+    └─ pm.openPosition()                     stores size/coll/entry/isLong as FHE ciphertexts
+
+  From Phase B onward: position is indistinguishable from any encrypted-open.
+  Observer sees only bytes32 ciphertext handles in PositionManager storage.
+
+  Plain-close settlement draws from plainUnderlyingReserve, accumulated by:
+    - plain-open collateral  (recordPlainDeposit at open)
+    - plain LP deposits      (addLiquidityPlain)
+  Any position — regardless of how it was opened — can close to plain ERC-20.
+  If reserve is exhausted, finalizeClosePlainPayout reverts; position left intact.
+
+  Router entry points:
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ submitDecryptTaskForOpen → openPosition          encrypted open │
+  │ submitOpenPositionCheckPlain → finalizeOpenPositionPlain        │
+  │                                                    plain open   │
+  │ requestClosePosition → finalizeClosePosition    encrypted close │
+  │ requestClosePlainPayout → finalizeClosePlainPayout  plain close │
+  │ requestCloseEncryptedPayout → finalizeCloseEncryptedPayout      │
+  │                                plain-open → encrypted payout    │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Feature 10 — Encrypted LP Token (SLP)
+
+`EncryptedLPToken` (name: "Shadespot LP Token", symbol: "SLP") extends FHE privacy to the LP layer. Anyone providing liquidity to ShadeSpot now has a position as private as any trade being made against it.
+
+```
+  LP Token Properties:
+
+  encryptedBalanceOf[addr]  euint64  ████████████  ← never plaintext
+  encryptedTotalSupply      euint64  ████████████  ← never plaintext
+  Mint event  → emits bytes32 handle only (no readable amount)
+  Burn event  → emits bytes32 handle only
+
+  Share issuance — fully encrypted arithmetic:
+  eShares = FHE.div(FHE.mul(eAmount, encryptedTotalSupply), totalLiquidity)
+  Only the vault may call mint() or burn().
+
+  Two deposit paths — same private share output:
+  ┌────────────────────────────────────────────────────────────────┐
+  │ addLiquidity(eAmount)     FHERC20 euint64 → encrypted shares   │
+  │ addLiquidityPlain(amount) plain ERC-20 → wrapped → enc shares  │
+  │                           also builds plainUnderlyingReserve   │
+  └────────────────────────────────────────────────────────────────┘
+
+  Withdrawal (two-phase CoFHE pattern):
+
+  Phase 1 ─ submitWithdrawalCheck(lp, shares)
+    hasBal  = FHE.gte(lpBalance[lp], eShares)          encrypted check
+    eAmount = (eShares × totalLiquidity) / totalSupply  encrypted arithmetic
+    hasLiq  = FHE.gte(eAvail, eAmount)                  encrypted check
+    emit WithdrawCheckSubmitted(hasBalHandle, hasLiqHandle, amountHandle)
+
+  Phase 2a ─ finalizeWithdrawalWithProof (encrypted payout)
+    verify proofs → lpToken.burn(lp, eShares) → confidentialTransfer(lp, eAmount)
+
+  Phase 2b ─ finalizeWithdrawalPlainWithProof (plain ERC-20 payout)
+    verify proofs + amountSig → lpToken.burn → unwrap → underlyingToken.transfer(lp)
+
+  Peer-to-peer share transfer (two-phase, amount never revealed):
+
+  Phase 1 ─ submitTransfer(to, eAmount)
+    hasBal = FHE.gte(encryptedBalanceOf[msg.sender], eAmount)
+    emit TransferSubmitted(from, to, hasBalHandle, amountHandle)
+
+  Phase 2 ─ finalizeTransfer(balPlain, balSig)
+    verify proof → encryptedBalanceOf[from] -= eAmount
+                 → encryptedBalanceOf[to]   += eAmount
+    emit Transfer(from, to, amountHandle)   ← bytes32 handle only
 ```
 
 ---
@@ -349,26 +475,29 @@ ShadeSpot replaces ERC-20 `approve` with a time-bounded **operator** grant. This
 | Funding entry rate | `euint128` | **Never** | Nobody |
 | Trigger price (orders) | `euint128` | At execution (encrypted comparison) | Nobody |
 | Liquidation flag | `ebool` | Single-bit decrypt to gate liquidation | Yes/No only |
-| Net settlement | `euint128` | Final payout at close | Trader + vault |
-| LP balance | `euint64` | Only on LP withdrawal (one-bit check) | LP only |
+| Net settlement (encrypted close) | `euint128` | Final payout at close | Trader + vault |
+| Net settlement (plain close) | plain `uint256` | At `finalizeClosePlainPayout` | Visible on-chain |
+| Which open/close path used | — | **Never** — all paths produce identical ciphertext state | Nobody |
+| LP share balance | `euint64` | Only via Threshold Network permit by holder | LP only |
+| LP pool ownership proportion | — | **Never** — total supply also encrypted | Nobody |
+| LP withdrawal amount (encrypted) | `euint64` | At withdrawal (holder only) | LP only |
+| LP withdrawal amount (plain) | plain `uint256` | At `finalizeWithdrawalPlainWithProof` | Visible on-chain |
 | Total liquidity | `euint64` | **Never** as plaintext | Nobody |
 | Total reserved | `euint64` | **Never** as plaintext | Nobody |
+| `plainUnderlyingReserve` | plain `uint256` | Always public | Anyone — aggregate only, no per-LP detail |
 
 ---
 
 ## Full Operational Flow
 
 ```
-  OPEN POSITION
-  ─────────────
+  OPEN POSITION — encrypted collateral
+  ─────────────────────────────────────
   Trader ──[setOperator once]──► FHERouter
-                                     │
                   1. submitDecryptTaskForOpen()
                      ├─ compute hasLiq check (encrypted)
                      └─ emit handle for off-chain decrypt
-                                     │
                   off-chain: decrypt(handle) → (canOpen, proof)
-                                     │
                   2. openPosition(proof)
                      ├─ verify proof on-chain
                      ├─ confidentialTransferFrom(trader → vault)
@@ -376,31 +505,46 @@ ShadeSpot replaces ERC-20 `approve` with a time-bounded **operator** grant. This
                      ├─ vault.reserveLiquidity()
                      └─ fundingManager.updateOI()
 
-  CLOSE POSITION
-  ──────────────
-  Trader ──► FHERouter.requestClosePositionFHE()
-                  │
+  OPEN POSITION — plain ERC-20 collateral
+  ─────────────────────────────────────────
+  Trader ──► FHERouter.submitOpenPositionCheckPlain(token, amount, encLev, encIsLong)
+                  ├─ underlyingToken.transferFrom(trader → vault)
+                  ├─ collateralToken.wrap(vault, amount)   ← encrypted on-chain
+                  ├─ FHE.asEuint64(amount) stored as eCollateral
+                  └─ vault.submitOpenLiquidityCheck()      emit handle
+          off-chain: decrypt(handle) → (hasLiq, sig)
+  Trader ──► FHERouter.finalizeOpenPositionPlain(token, hasLiqPlain, sig)
+                  ├─ vault.confirmOpenLiquidityCheck()
+                  └─ pm.openPosition()  ← all fields FHE ciphertexts; identical to enc-open
+
+  CLOSE POSITION — encrypted payout
+  ───────────────────────────────────
+  Trader ──► FHERouter.requestClosePosition(posId)
                   ├─ compute ePnL, eFundingFee, eNetPnL (all FHE)
-                  ├─ FHE.allowPublic(settlementHandle)
-                  └─ emit RequestClose event
-
-          off-chain: decrypt(settlementHandle) → (amount, sig)
-
-  Keeper/Trader ──► FHERouter.finalizeClosePosition(amount, sig)
+                  └─ emit RequestClose event (handle)
+          off-chain: decrypt(handle) → (amount, sig)
+  Keeper ──► FHERouter.finalizeClosePosition(posId, amount, sig, ...)
                   ├─ FHE.publishDecryptResult() — verify proof
                   ├─ vault.releaseLiquidity(size)
                   └─ token.confidentialTransfer(trader, amount)
 
+  CLOSE POSITION — plain ERC-20 payout
+  ──────────────────────────────────────
+  Trader ──► FHERouter.requestClosePlainPayout(posId)
+                  └─ sets plainPayoutRequested flag
+  Keeper ──► FHERouter.finalizeClosePlainPayout(posId, finalAmount, sigs...)
+                  ├─ verify CoFHE proofs for amount/size/collateral
+                  ├─ vault.payTraderPlain() — draws from plainUnderlyingReserve
+                  │    burns encrypted from vault, transfers plain ERC-20 to trader
+                  └─ position deleted; plainPayoutRequested cleared
+
   LIQUIDATION
   ───────────
   Liquidator ──► LiquidationManager.liquidate(posKey)
-                  │
                   ├─ compute eCanLiquidate (single ebool, FHE)
                   ├─ FHE.allowPublic(canLiqHandle)
                   └─ emit LiquidationRequest event
-
           off-chain: decrypt(canLiqHandle) → (true/false, sig)
-
   Liquidator ──► LiquidationManager.finalizeLiquidation(posKey, true, sig)
                   ├─ verify proof
                   ├─ liquidator reward: 5% of collateral (encrypted transfer)
@@ -416,30 +560,41 @@ contracts/
 ├── src/
 │   ├── core/
 │   │   ├── IVault.sol                # Vault routing interface
-│   │   ├── FHEVault.sol              # Encrypted euint64 LP accounting
+│   │   ├── FHEVault.sol              # Encrypted euint64 LP accounting; plainUnderlyingReserve
 │   │   ├── PositionManager.sol       # Position lifecycle; all fields encrypted
 │   │   ├── FHEFundingRateManager.sol # Encrypted OI and hourly funding
 │   │   └── LiquidationManager.sol    # Liquidation entry-point; single-bit FHE check
 │   ├── trading/
-│   │   ├── FHERouter.sol             # Primary user entry-point
+│   │   ├── FHERouter.sol             # Primary user entry-point; plain + encrypted paths
 │   │   └── FHEOrderManager.sol       # Encrypted limit / trigger orders
 │   ├── oracle/
 │   │   └── PriceOracle.sol           # Price feed (setPrice / getPrice)
 │   ├── tokens/
 │   │   ├── IEncryptedERC20.sol       # FHERC20 interface (operator model)
+│   │   ├── IEncryptedLPToken.sol     # LP token interface (mint/burn)
+│   │   ├── EncryptedLPToken.sol      # euint64 LP shares; two-phase transfer
 │   │   └── MockFHEToken.sol          # FHERC20 token for testing
 │   └── libraries/
 │       └── PnlUtils.sol              # PnL helper library
 │
 ├── test/
 │   ├── unit/
-│   │   ├── FHEPool.t.sol             # 56 end-to-end FHE integration tests
+│   │   ├── FHEPool.t.sol             # End-to-end FHE integration tests
+│   │   ├── PlainCollateral.t.sol     # Plain-open position tests
+│   │   ├── PlainPayoutClose.t.sol    # All four open/close path combinations
+│   │   ├── PlainLPDeposit.t.sol      # Plain LP deposit / plain withdrawal tests
 │   │   └── PnlUtils.t.sol            # Library edge cases
 │   ├── fuzz/
 │   │   ├── PnlUtils.t.sol            # Fuzz PnL library
 │   │   └── FundingRateManager.t.sol  # Fuzz funding rate bounds
 │   └── mocks/
 │       └── MockTaskManager.sol       # CoFHE TaskManager for Foundry simulation
+│
+├── sdk/
+│   └── src/
+│       ├── flow-enc-open-plain-close.ts   # Encrypted open → plain ERC-20 close
+│       ├── flow-plain-open-enc-close.ts   # Plain open → encrypted payout close
+│       └── flow-plain-open-plain-close.ts # Plain open → plain ERC-20 close
 │
 ├── script/
 │   └── DeployShadeSpot.s.sol         # Single-script full ecosystem deployment
@@ -456,10 +611,13 @@ contracts/
 ## Running Tests
 
 ```bash
-forge test                                          # all 56 pure FHE tests
-forge test -v                                       # verbose output
-forge test --match-path test/unit/FHEPool.t.sol    # E2E integration only
-forge test --match-path test/fuzz/                 # fuzz suite only
+forge test                                                  # full suite
+forge test -v                                               # verbose output
+forge test --match-path test/unit/FHEPool.t.sol            # E2E encrypted flow
+forge test --match-path test/unit/PlainCollateral.t.sol    # plain-open tests
+forge test --match-path test/unit/PlainPayoutClose.t.sol   # all four open/close paths
+forge test --match-path test/unit/PlainLPDeposit.t.sol     # plain LP deposit/withdraw
+forge test --match-path test/fuzz/                         # fuzz suite only
 ```
 
 Tests use `MockTaskManager` to simulate synchronous FHE decryption in Foundry — no live CoFHE network needed for local testing.
@@ -479,20 +637,25 @@ forge script script/DeployShadeSpot.s.sol --rpc-url <RPC_URL> --broadcast
 **Deployment order** (handled automatically by deploy script):
 
 ```
-1. PriceOracle
-2. FHEFundingRateManager
-3. FHEVault(collateralToken)
-4. PositionManager(vault, oracle)
-5. FHEOrderManager(oracle, fundingManager)
-6. LiquidationManager(positionManager, fundingManager)
-7. FHERouter(positionManager, vault, orderManager, fundingManager, token, indexToken)
-8. Wire: setRouter / setPositionManager / initializeToken
+1.  PriceOracle
+2.  FHEFundingRateManager
+3.  FHEVault(collateralToken)
+4.  EncryptedLPToken(vault)
+5.  PositionManager(vault, oracle)
+6.  FHEOrderManager(oracle, fundingManager)
+7.  LiquidationManager(positionManager, fundingManager)
+8.  FHERouter(positionManager, vault, orderManager, fundingManager, token, indexToken, underlyingToken)
+9.  Wire: setRouter / setPositionManager / setLPToken / setUnderlyingToken / initializeToken
 ```
 
 **Protocol Operator Setup (users must do this once):**
 
 ```solidity
+// Encrypted collateral path
 fheToken.setOperator(address(fheRouter), type(uint48).max);
+
+// Plain collateral path — approve router to pull underlying ERC-20
+underlyingToken.approve(address(fheRouter), amount);
 ```
 
 ---

@@ -53,13 +53,15 @@ contract DeployShadeSpot is Script {
             address(positionManager),
             address(fundingManager)
         );
+        address underlyingToken_ = vm.envOr("UNDERLYING_TOKEN", address(0));
         router = new FHERouter(
             address(positionManager),
             address(vault),
             address(orderManager),
             address(fundingManager),
             fheToken,
-            indexToken_
+            indexToken_,
+            underlyingToken_
         );
 
         vault.setPositionManager(address(positionManager));

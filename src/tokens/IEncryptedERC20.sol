@@ -23,4 +23,13 @@ interface IEncryptedERC20 {
         address to,
         euint64 value
     ) external returns (euint64 transferred);
+
+    /// @notice Mints `amount` encrypted tokens to `to`.
+    /// @dev When called by the router after pulling underlying ERC-20, this is the wrapping step.
+    function wrap(address to, uint64 amount) external;
+
+    /// @notice Burns `amount` encrypted tokens from `from`.
+    ///         Caller must be an active operator for `from`.
+    ///         Used by the router to convert an encrypted payout back to plain ERC-20.
+    function unwrap(address from, uint64 amount) external;
 }
