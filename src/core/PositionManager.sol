@@ -170,6 +170,13 @@ contract PositionManager {
         return positions[key].exists;
     }
 
+    /// @notice Collateral ciphertext handle for close finalization (keeper / finalizer only).
+    function getPositionCollateralHandle(bytes32 key) external view returns (bytes32) {
+        require(msg.sender == finalizer || msg.sender == owner, "unauthorized");
+        require(positions[key].exists, "no position");
+        return euint128.unwrap(positions[key].collateral);
+    }
+
     /**
      * @notice Opens a leveraged position using encrypted collateral.
      * @param trader       Trader address.

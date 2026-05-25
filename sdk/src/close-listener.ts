@@ -23,14 +23,16 @@ import { RPC_URL, PRIVATE_KEY, POOL2 } from "./config";
 
 const POSITION_MANAGER_ABI = [
   "function finalizeClosePosition(bytes32 positionKey,uint256 finalAmount,bytes finalAmountSignature,uint256 sizePlain,bytes sizeSignature,uint256 collateralPlain,bytes collateralSignature,bool isLongPlain) external",
+  "function finalizer() view returns (address)",
   "function getMyPosition(bytes32 key) view returns (tuple(address owner,address indexToken,bytes32 size,bytes32 collateral,bytes32 entryPrice,bytes32 entryFundingRateBiased,bytes32 eLeverage,bytes32 isLong,bool exists,uint256 leverage))",
   "event CloseRequested(bytes32 indexed positionKey, address indexed trader, bytes32 finalAmountHandle, bytes32 sizeHandle)",
   "event CloseFinalized(bytes32 indexed positionKey, address indexed trader, bytes32 finalAmountHandle)",
   "event PositionOpened(bytes32 indexed positionKey, address indexed trader, bytes32 sizeHandle, bytes32 collateralHandle, bytes32 isLongHandle)",
 ] as const;
 
-const FROM_BLOCK = parseInt(process.env.FROM_BLOCK ?? "0");
+const FROM_BLOCK = parseInt(process.env.FROM_BLOCK ?? "420000");
 const REPLAY = process.env.REPLAY === "1";
+const CHAIN_ID = 421614;
 
 const OPEN_LOOKBACK_WINDOW = 200_000; // blocks per step
 const OPEN_LOOKBACK_STEPS = 40; // 8M blocks max search
@@ -99,10 +101,17 @@ async function decryptHandle(cofheClient: any, ctHash: bigint, label: string): P
 
   for (let attempt = 1; attempt <= DECRYPT_RETRIES; attempt++) {
     try {
-      const result = await cofheClient.decryptForTx(ctHashHex).withPermit(permit).execute();
+      console.log(`  [decrypt] ${label} attempt ${attempt}/${DECRYPT_RETRIES}...`);
+      const result = await cofheClient
+        .decryptForTx(ctHashHex)
+        .setChainId(CHAIN_ID)
+        .withPermit(permit)
+        .execute();
+      console.log(`  [decrypt] ${label} ok → ${(result.decryptedValue as bigint).toString()}`);
       return { value: result.decryptedValue as bigint, sig: result.signature as string };
     } catch (err: any) {
       const msg = err?.message ?? String(err);
+      console.warn(`  [decrypt] ${label} attempt ${attempt} failed: ${msg}`);
       if (attempt === DECRYPT_RETRIES) throw new Error(`decryptForTx[${label}] failed: ${msg}`);
       await new Promise(r => setTimeout(r, DECRYPT_RETRY_MS));
     }
@@ -149,11 +158,12 @@ async function finalize(pm: Contract, cofheClient: any, positionKey: string, tra
   console.log(`\n[Finalize] trader=${trader}`);
   console.log(`  positionKey: ${positionKey}`);
 
-  const [finalAmountRes, sizeRes, collateralRes] = await Promise.all([
-    decryptHandle(cofheClient, finalAmountHandle, "finalAmount"),
-    decryptHandle(cofheClient, sizeHandle, "size"),
-    decryptHandle(cofheClient, collateralHandle, "collateral"),
-  ]);
+  // Sequential decrypts — clearer logs and less TN/RPC contention than Promise.all.
+  const finalAmountRes = await decryptHandle(cofheClient, finalAmountHandle, "finalAmount");
+  const sizeRes = await decryptHandle(cofheClient, sizeHandle, "size");
+  const collateralRes = await decryptHandle(cofheClient, collateralHandle, "collateral");
+
+  console.log(`  [tx] submitting finalizeClosePosition...`);
 
   await new Promise<void>((resolve, reject) => {
     enqueue(async () => {
@@ -186,7 +196,8 @@ async function main() {
   const fallbackRpc = process.env.ARBITRUM_SEPOLIA_RPC_URL || "https://sepolia-rollup.arbitrum.io/rpc";
 
   async function pickProvider(): Promise<JsonRpcProvider> {
-    const candidates = [RPC_URL, fallbackRpc].filter(Boolean);
+    // Prefer public RPC first — Infura free tier often rate-limits eth_call + getLogs during finalize.
+    const candidates = [fallbackRpc, RPC_URL].filter(Boolean);
     let lastErr: unknown = null;
     for (const url of candidates) {
       try {
@@ -209,7 +220,13 @@ async function main() {
   console.log(`Close listener (Pool 2)`);
   console.log(`Wallet:          ${wallet.address}`);
   console.log(`PositionManager: ${POOL2.POSITION_MANAGER}`);
-  console.log(`FROM_BLOCK:      ${FROM_BLOCK || "earliest"}  (set this near deployment to speed up)`);
+  const onChainFinalizer = await pm.finalizer();
+  console.log(`FROM_BLOCK:      ${FROM_BLOCK}`);
+  console.log(`Finalizer:       ${onChainFinalizer}  (wallet must match to submit finalizeClosePosition)`);
+  if (onChainFinalizer.toLowerCase() !== wallet.address.toLowerCase()) {
+    console.error(`ERROR: wallet ${wallet.address} is not the on-chain finalizer ${onChainFinalizer}`);
+    process.exit(1);
+  }
 
   // CoFHE client
   const config = createCofheConfig({ supportedChains: [arbSepolia] });
@@ -241,6 +258,7 @@ async function main() {
         try {
           const pos = await withRpcRetry(() => pm.getMyPosition(positionKey), "pm.getMyPosition");
           collateralHandle = BigInt(pos.collateral as string);
+          console.log(`  [collateral] from getMyPosition`);
         } catch (e) {
           collateralHandle = null;
         }
@@ -248,8 +266,12 @@ async function main() {
 
       // Fallback: find collateralHandle from PositionOpened (works even when trader != wallet).
       if (!collateralHandle || collateralHandle === 0n) {
+        console.log(`  [collateral] searching PositionOpened (up to ${OPEN_LOOKBACK_STEPS}×${OPEN_LOOKBACK_WINDOW} blocks)...`);
         const opened = await findPositionOpened(pm, positionKey, currentBlock);
-        if (opened) collateralHandle = BigInt(opened.args[3] as string);
+        if (opened) {
+          collateralHandle = BigInt(opened.args[3] as string);
+          console.log(`  [collateral] from PositionOpened block=${opened.blockNumber}`);
+        }
       }
 
       if (!collateralHandle || collateralHandle === 0n) {

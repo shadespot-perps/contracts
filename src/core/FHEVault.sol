@@ -93,6 +93,12 @@ contract FHEVault is IVault {
         router = _router;
     }
 
+    /// @dev LP UIs need to decrypt `encryptedTotalSupply` for pool-share % (with user permit or public allow).
+    function _syncEncryptedTotalSupplyAllows() private {
+        FHE.allow(encryptedTotalSupply, address(this));
+        FHE.allowPublic(encryptedTotalSupply);
+    }
+
     // --------------------------------------------------------
     // LP FUNCTIONS
     // --------------------------------------------------------
@@ -118,11 +124,10 @@ contract FHEVault is IVault {
         encryptedTotalSupply   = FHE.add(encryptedTotalSupply, shares);
         totalLiquidity         = FHE.add(totalLiquidity, eAmount);
 
-        FHE.allow(lpBalance[lp],       address(this));
-        FHE.allow(encryptedTotalSupply, address(this));
-        FHE.allow(totalLiquidity,       address(this));
-
-        FHE.allow(lpBalance[lp],       lp);
+        FHE.allow(lpBalance[lp], address(this));
+        FHE.allow(totalLiquidity, address(this));
+        FHE.allow(lpBalance[lp], lp);
+        _syncEncryptedTotalSupplyAllows();
 
         emit Deposit(lp, euint64.unwrap(eAmount));
     }
@@ -197,11 +202,12 @@ contract FHEVault is IVault {
         encryptedTotalSupply  = FHE.sub(encryptedTotalSupply, eShares);
         totalLiquidity        = FHE.sub(totalLiquidity, eAmount);
 
-        FHE.allow(lpBalance[lp],       address(this));
-        FHE.allow(encryptedTotalSupply, address(this));
-        FHE.allow(totalLiquidity,       address(this));
-        FHE.allow(eAmount,              address(collateralToken));
-        FHE.allow(eAmount,              lp);
+        FHE.allow(lpBalance[lp], address(this));
+        FHE.allow(totalLiquidity, address(this));
+        FHE.allow(eAmount, address(collateralToken));
+        FHE.allow(eAmount, lp);
+        FHE.allow(lpBalance[lp], lp);
+        _syncEncryptedTotalSupplyAllows();
 
         collateralToken.confidentialTransfer(lp, eAmount);
 
