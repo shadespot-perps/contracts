@@ -6,6 +6,33 @@ PnL, funding fees, cross-position balances, and liquidation checks are computed 
 
 ---
 
+## Protocol status (monorepo)
+
+This directory (`shadespot/`) holds **Solidity contracts**, Foundry tests, deploy scripts, and the **TypeScript SDK** for scripted flows. Sibling repos in `shadespot-monorepo/`:
+
+| Package | Role |
+|---------|------|
+| **`shadespot-frontend/`** | React trading UI — wallet, encrypt/decrypt, open/close, LP, position discovery |
+| **`shadespot-backend/`** | NestJS keepers — oracle updates, close finalizer, limit-order executor |
+| **`shadespot/`** (this repo) | On-chain protocol + `sdk/` CLI scripts |
+
+### Shipped on testnets (Ethereum / Arbitrum / Base Sepolia)
+
+- **Market open/close** — two-phase CoFHE (encrypted + plain collateral wrap)
+- **Plain close payout** — `requestClosePlainPayout` / `finalizeClosePlainPayout` via `plainUnderlyingReserve`
+- **Limit & trigger orders** — encrypted parameters; backend order-executor keeper
+- **LP vault** — encrypted + plain deposit/withdraw; `EncryptedLPToken` (SLP)
+- **Funding & OI** — `FHEFundingRateManager` (encrypted open interest)
+- **Liquidation** — single-bit `ebool` decrypt pattern (contracts ready; liquidation keeper stub in backend)
+
+### Integration notes
+
+- **Address source of truth** (after deploy): `shadespot-frontend/src/lib/contracts.ts` → mirror in `shadespot-backend/src/modules/config/deployments.ts` and `sdk/src/config.ts`.
+- **Position keys**: FHE opens use `keccak256(trader, token, nonce)` — not `(token, isLong)` in storage keys. UIs index `PositionOpened` / router `OpenPosition` events (chunked logs on Base Sepolia).
+- **Keepers required** for async close and order execution; users can open from the frontend alone.
+
+---
+
 ## Why ShadeSpot?
 
 | Problem (Legacy Perps) | ShadeSpot Solution |
@@ -79,6 +106,28 @@ Encrypted inputs go through reserve/check phases, CoFHE decrypt for guards, then
 ![Open position — continuation](diagrams/Open%20Position%203.png)
 
 ![Open position — continuation](diagrams/Open%20Position%204.png)
+
+### Closing a position (request → decrypt → finalize)
+
+Close uses the same async CoFHE pattern as open: request on-chain, TN decrypt off-chain, finalize with proofs. Phase 3 differs by payout type (encrypted FHERC20 vs plain ERC-20 from `plainUnderlyingReserve`).
+
+![Close position — phase 1](diagrams/Close%20Position1.png)
+
+![Close position — phase 2](diagrams/Close%20Position%202.png)
+
+**Encrypted payout** (`requestClosePosition` → keeper `finalizeClosePosition`):
+
+![Close position — encrypted payout (phase 3)](diagrams/Close%20Position%20Encrypted%20Phase%203.png)
+
+**Plain ERC-20 payout** (`requestClosePlainPayout` → keeper `finalizeClosePlainPayout`):
+
+![Close position — plain ERC-20 payout (phase 3)](diagrams/Close%20Position%20PlainErc20%20phase%203.png)
+
+### Liquidating a position
+
+Liquidation reveals only a single `ebool` (eligible yes/no); size, collateral, and direction stay encrypted.
+
+![Liquidate position](diagrams/Liquidate%20Position%201.png)
 
 ---
 
@@ -163,6 +212,8 @@ PnL Calculation Flow (all encrypted):
 
 Because CoFHE decryption is asynchronous (handled by a threshold network), ShadeSpot uses a **request → off-chain decrypt → finalize with proof** pattern for every value that must eventually be known.
 
+Visual flow: [Closing a position](#closing-a-position-request--decrypt--finalize) under Core Architecture (phases 1–2, then encrypted or plain ERC-20 phase 3).
+
 ```
   Phase 1: Request (on-chain)
   ─────────────────────────────────────────────
@@ -197,6 +248,8 @@ This pattern guarantees liveness (no "decrypt not ready" reverts) and correctnes
 ## Feature 4 — Encrypted Liquidation with a Single-Bit Reveal
 
 Liquidators cannot calculate a position's distance-to-liquidation because they cannot see size, collateral, or entry price. Only a single `ebool` is decrypted to authorize liquidation.
+
+![Liquidate position](diagrams/Liquidate%20Position%201.png)
 
 ```
   Liquidation Eligibility Check (all in FHE):
@@ -367,7 +420,7 @@ Every combination of plain ERC-20 and encrypted collateral is supported across o
     ├─ FHE.asEuint64(amount) stored as eCollateral
     └─ vault.submitOpenLiquidityCheck()      emit handle for off-chain decrypt
 
-  Phase B ─ finalizeOpenPositionPlain(token, hasLiqPlain, hasLiqSig)
+  Phase B ─ finalizeOpenPositionPlain(token, plainCollateral, encLev, encIsLong, hasLiqPlain, hasLiqSig)
     ├─ vault.confirmOpenLiquidityCheck()     verify CoFHE proof
     └─ pm.openPosition()                     stores size/coll/entry/isLong as FHE ciphertexts
 
@@ -391,6 +444,12 @@ Every combination of plain ERC-20 and encrypted collateral is supported across o
   │                                plain-open → encrypted payout    │
   └─────────────────────────────────────────────────────────────────┘
 ```
+
+Close phase 3 by payout type:
+
+![Encrypted close payout](diagrams/Close%20Position%20Encrypted%20Phase%203.png)
+
+![Plain ERC-20 close payout](diagrams/Close%20Position%20PlainErc20%20phase%203.png)
 
 ---
 
@@ -513,7 +572,7 @@ ShadeSpot replaces ERC-20 `approve` with a time-bounded **operator** grant. This
                   ├─ FHE.asEuint64(amount) stored as eCollateral
                   └─ vault.submitOpenLiquidityCheck()      emit handle
           off-chain: decrypt(handle) → (hasLiq, sig)
-  Trader ──► FHERouter.finalizeOpenPositionPlain(token, hasLiqPlain, sig)
+  Trader ──► FHERouter.finalizeOpenPositionPlain(token, plainCol, encLev, encIsLong, hasLiqPlain, sig)
                   ├─ vault.confirmOpenLiquidityCheck()
                   └─ pm.openPosition()  ← all fields FHE ciphertexts; identical to enc-open
 
@@ -557,6 +616,13 @@ ShadeSpot replaces ERC-20 `approve` with a time-bounded **operator** grant. This
 
 ```
 contracts/
+├── diagrams/                         # Protocol flow diagrams (referenced in README)
+│   ├── General Architecture.png
+│   ├── Open Position.png … Open Position 4.png
+│   ├── Close Position1.png … Close Position 2.png
+│   ├── Close Position Encrypted Phase 3.png
+│   ├── Close Position PlainErc20 phase 3.png
+│   └── Liquidate Position 1.png
 ├── src/
 │   ├── core/
 │   │   ├── IVault.sol                # Vault routing interface
@@ -590,11 +656,15 @@ contracts/
 │   └── mocks/
 │       └── MockTaskManager.sol       # CoFHE TaskManager for Foundry simulation
 │
-├── sdk/
+├── sdk/                              # TypeScript ops / integration scripts
 │   └── src/
-│       ├── flow-enc-open-plain-close.ts   # Encrypted open → plain ERC-20 close
-│       ├── flow-plain-open-enc-close.ts   # Plain open → encrypted payout close
-│       └── flow-plain-open-plain-close.ts # Plain open → plain ERC-20 close
+│       ├── open-position.ts          # Market open helper
+│       ├── close-listener.ts         # Historical CloseRequested finalizer
+│       ├── keeper-finalize.ts        # Keeper-style close finalize
+│       ├── flow-enc-open-plain-close.ts
+│       ├── flow-plain-open-enc-close.ts
+│       ├── flow-plain-open-plain-close.ts
+│       └── config.ts                 # CHAIN_ID + DEPLOYMENTS (sync with frontend)
 │
 ├── script/
 │   └── DeployShadeSpot.s.sol         # Single-script full ecosystem deployment
@@ -670,30 +740,114 @@ forge build
 
 ---
 
-## Deployments (Arbitrum Sepolia)
+## Deployments (testnets)
 
-```
+CoFHE testnets: **Ethereum Sepolia** (`11155111`), **Arbitrum Sepolia** (`421614`), **Base Sepolia** (`84532`).
 
-== Logs ==
-  MockFHEToken deployed: 0xDFF61c2e5fFB08bdfEd3520a37c86A2c976e3283
-  
-=== ShadeSpot FHE deployment complete ===
-  FHE collateral:       0xDFF61c2e5fFB08bdfEd3520a37c86A2c976e3283
-  PriceOracle:          0x5557D65E67124bA5b3ea3dAE17e9B473006bCd4E
-  FHEFundingManager:    0xa5e08198e0E6268413D398b908Afe303b4aB4623
-  FHEVault:             0x96D1Cc159775457EE7c03FF98683959F10FCc91C
-  PositionManager:      0xa9147bc8274a87FC63c8BEa1dBBF07c62cd557F1
-  FHEOrderManager:      0x81cA357f55b6C4763f2f5E1f11308D8e09457FA0
-  LiquidationManager:   0x921c6e48F5a698BaC282aB6B022aa124dFF225c6
-  FHERouter:            0x2Df347fd32cED9CD019C752E999f9ABf6E4613e4
-  Finalizer:            0x2b284c179a65709fC823711e6D76134E55a63798
-  
-Index token (ETH):    0x980B62Da83eFf3D4576C647993b0c1D7faf17c73
-```
+### Deploy a fresh stack
 
-cd shadespot && source .env && forge script script/DeployShadeSpot.s.sol:DeployShadeSpot \
-  --rpc-url arbitrum_sepolia \
+```bash
+cd shadespot
+cp .env.example .env
+source .env
+source scripts/use-network-env.sh arbitrum_sepolia   # or eth_sepolia | base_sepolia
+
+forge script script/DeployShadeSpot.s.sol:DeployShadeSpot \
+  --rpc-url "$DEPLOY_RPC_ALIAS" \
   --broadcast \
   --verify \
-  --etherscan-api-key "$ARBISCAN_API_KEY" \
   -vvv
+```
+
+The script deploys `MockFHEToken` / `MockPlainERC20` when unset, wires `FHERouter` + `vault.setUnderlyingToken`, and sets protocol roles.
+
+After deploy, copy addresses + **deploy block** into:
+
+- `shadespot-frontend/src/lib/contracts.ts` (`DEPLOYMENTS`, `fromBlock`)
+- `shadespot-backend/src/modules/config/deployments.ts`
+- `sdk/src/config.ts`
+
+Optional: `VITE_UNDERLYING_TOKEN` (frontend dev faucet), `UNDERLYING_TOKEN` (backend).
+
+### Canonical deployments (current)
+
+Synced across frontend / backend / SDK:
+
+#### Arbitrum Sepolia — `421614` · `fromBlock` 271664623
+
+| Contract | Address |
+|----------|---------|
+| Index token (WETH) | `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73` |
+| FHERouter | `0xb0ef97bb069f9b6fefb246de0688f8072d8c6671` |
+| PositionManager | `0x1567dbbcd3ad98974b3489094342ca7827d48e29` |
+| FHEOrderManager | `0xa6b0c3aa876782d4e9dea48bddaf7d605bb7f8ef` |
+| FHEVault | `0xe3bb5227af76420018fc8b83b62b8986a53fc6b5` |
+| PriceOracle | `0x83dab41639664325e92c25688e72a4f0dd0c5f44` |
+| FHEFundingManager | `0xae38162272ead1841d2daaccb61201cc373155ae` |
+| MockFHEToken | `0xebfad581cae1cfd8ab8f73e06e47491acad80a92` |
+| Plain underlying | `0xc02db0300f51966aa698b2ff9c57a9098f2be75d` |
+| LiquidationManager | `0xaa3438e9d8aa8dec4be2f6a6f9ff1f2728179c1f` |
+
+#### Ethereum Sepolia — `11155111` · `fromBlock` 10938305
+
+| Contract | Address |
+|----------|---------|
+| Index token | `0xf531B8F309Be94191af87605CfBf600D71C2cFe0` |
+| FHERouter | `0xc44043bcb49505105675414643c53009c97f98b0` |
+| PositionManager | `0x4f88d2ffebb4b8493fa4460546934a48fd46f455` |
+| FHEOrderManager | `0x76977bcf817fc8720b42a80406bbed4d2006e6d7` |
+| FHEVault | `0xb672f9690d09eb0d62393a9128edd2c8e0322b63` |
+| PriceOracle | `0x924d6e0f2996fc6517516b3d50ac7782b08e679a` |
+| FHEFundingManager | `0xd9f29b1da10e3835f155e016364ef2d320d686e8` |
+| MockFHEToken | `0xfa89331592f2a226207cff13240d9d41bd2d60f5` |
+| Plain underlying | `0xe533e7fafff450ed287471c465c48d421a59b6cb` |
+| LiquidationManager | `0xf2472217b9ad364143d51d38930b56a23bc55777` |
+
+#### Base Sepolia — `84532` · `fromBlock` 42090261
+
+| Contract | Address |
+|----------|---------|
+| Index token (WETH) | `0x4200000000000000000000000000000000000006` |
+| FHERouter | `0xbc5c5f0b0b50bc6ff5540de5a6bff7977959ad52` |
+| PositionManager | `0x6c9e3d0376d6479267886fb28cb2c6bc7d684480` |
+| FHEOrderManager | `0x5d2e88801434b1d8fdc585c942bc8c0f430d1571` |
+| FHEVault | `0x2c3ac3af650923593fae8e2b5d1f6f2d2709a1e7` |
+| PriceOracle | `0xf251e5d86b101b2662d88e366f9d81475ad9eba7` |
+| FHEFundingManager | `0x575fe7d38c479f65d3329e64dca1dbb599c0b640` |
+| MockFHEToken | `0x54866fca9eca5bee34cf3c65ec032196594352a6` |
+| Plain underlying | `0x7837d65620731972970b7f6cc2eda4b46428f7aa` |
+| LiquidationManager | `0xca146c6c3eb2f5776a222c3849e96994e7c0eded` |
+
+### Multi-network operations
+
+| Consumer | How to select chain |
+|----------|---------------------|
+| **Frontend** | Wallet `chainId` → `getContracts(chainId)` |
+| **Backend** | `CHAIN_ID` env — one process per chain |
+| **SDK** | `CHAIN_ID` + `ARBITRUM_SEPOLIA_RPC_URL` / `ETH_SEPOLIA_RPC_URL` / `BASE_SEPOLIA_RPC_URL` in `sdk/.env` |
+
+### SDK scripts (`sdk/`)
+
+```bash
+cd shadespot/sdk
+cp .env.example .env
+# CHAIN_ID=421614 + PRIVATE_KEY + RPC URL
+
+npm run open-position          # encrypted market open
+npm run close-listener         # backlog close finalizer (one-off)
+npm run flow-plain-open-plain-close
+npm run flow-enc-open-plain-close
+npm run flow-plain-open-enc-close
+npm run keeper-finalize
+npm run update-price
+```
+
+See `sdk/package.json` for the full script list.
+
+---
+
+## Related repos
+
+- **Trading UI**: `../shadespot-frontend/README.md`
+- **Keepers & API**: `../shadespot-backend/README.md`
+

@@ -24,13 +24,10 @@ const ORACLE_ABI = [
 const PRICE_DECIMALS = 8;
 
 async function fetchEthPrice(): Promise<number> {
-  const url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`CoinGecko request failed: ${res.status} ${res.statusText}`);
-  const json = await res.json() as { ethereum: { usd: number } };
-  const price = json?.ethereum?.usd;
-  if (!price || price <= 0) throw new Error("Invalid price returned from CoinGecko");
-  return price;
+  // CoinGecko is rate-limited on public endpoints; for dev/testnet we mock ETH/USD.
+  // Range: [2000, 3000)
+  const mocked = 2000 + Math.random() * 1000;
+  return Math.round(mocked * 100) / 100;
 }
 
 function toPriceUnits(usdPrice: number): bigint {
@@ -64,8 +61,8 @@ async function main() {
   console.log("Wallet     :", wallet.address);
   console.log("Index token:", INDEX_TOKEN);
 
-  // Fetch live price
-  console.log("\nFetching ETH price from CoinGecko...");
+  // Fetch mocked price
+  console.log("\nMocking ETH price (CoinGecko disabled)...");
   const ethUsd    = await fetchEthPrice();
   const priceUnits = toPriceUnits(ethUsd);
   console.log(`ETH/USD: $${ethUsd.toFixed(2)} → ${priceUnits} (8-dec)`);

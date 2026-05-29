@@ -11,6 +11,8 @@ import "../src/core/LiquidationManager.sol";
 import "../src/trading/FHEOrderManager.sol";
 import "../src/trading/FHERouter.sol";
 import "../src/tokens/MockFHEToken.sol";
+import "../src/tokens/MockPlainERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 contract DeployShadeSpot is Script {
 
@@ -21,6 +23,17 @@ contract DeployShadeSpot is Script {
     FHEOrderManager    public orderManager;
     LiquidationManager public liquidationManager;
     FHERouter          public router;
+
+    function _logErc20Metadata(string memory label, address token) internal view {
+        (bool okName, bytes memory nameData) = token.staticcall(abi.encodeWithSignature("name()"));
+        (bool okSymbol, bytes memory symbolData) = token.staticcall(abi.encodeWithSignature("symbol()"));
+        (bool okDecimals, bytes memory decimalsData) = token.staticcall(abi.encodeWithSignature("decimals()"));
+
+        console2.log(label, token);
+        if (okName) console2.log("  name:   ", abi.decode(nameData, (string)));
+        if (okSymbol) console2.log("  symbol: ", abi.decode(symbolData, (string)));
+        if (okDecimals) console2.log("  decimals:", uint256(uint8(abi.decode(decimalsData, (uint8)))));
+    }
 
     function run() external {
         address indexToken_ = vm.envAddress("INDEX_TOKEN");
@@ -53,7 +66,15 @@ contract DeployShadeSpot is Script {
             address(positionManager),
             address(fundingManager)
         );
-        address underlyingToken_ = vm.envOr("UNDERLYING_TOKEN", address(0));
+        address underlyingTokenFromEnv = vm.envOr("UNDERLYING_TOKEN", address(0));
+        address underlyingToken_ = underlyingTokenFromEnv;
+        if (underlyingToken_ == address(0)) {
+            underlyingToken_ = address(new MockPlainERC20());
+            console2.log("MockPlainERC20 deployed:", underlyingToken_);
+        } else {
+            console2.log("MockPlainERC20 provided:", underlyingToken_);
+        }
+
         router = new FHERouter(
             address(positionManager),
             address(vault),
@@ -63,6 +84,8 @@ contract DeployShadeSpot is Script {
             indexToken_,
             underlyingToken_
         );
+
+        vault.setUnderlyingToken(underlyingToken_);
 
         vault.setPositionManager(address(positionManager));
         vault.setRouter(address(router));
@@ -88,7 +111,8 @@ contract DeployShadeSpot is Script {
         vm.stopBroadcast();
 
         console2.log("\n=== ShadeSpot FHE deployment complete ===");
-        console2.log("FHE collateral:      ", fheToken);
+        _logErc20Metadata("FHE collateral:", fheToken);
+        _logErc20Metadata("Plain underlying:", underlyingToken_);
         console2.log("PriceOracle:         ", address(oracle));
         console2.log("FHEFundingManager:   ", address(fundingManager));
         console2.log("FHEVault:            ", address(vault));

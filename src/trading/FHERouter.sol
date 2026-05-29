@@ -109,6 +109,9 @@ contract FHERouter {
         euint64 eLeverage = FHE.asEuint64(encLeverage);
         ebool eIsLong = FHE.asEbool(encIsLong);
         euint64 eSize = FHE.mul(eCollateral, eLeverage);
+        FHE.allowThis(eCollateral);
+        FHE.allowThis(eLeverage);
+        FHE.allowThis(eIsLong);
         FHE.allow(eSize, address(vault));
 
         pendingOpenRequests[msg.sender] = PendingOpenRequest({
@@ -200,6 +203,7 @@ contract FHERouter {
     ) public {
         require(token == indexToken, "unsupported index token");
         require(!pendingOpenRequests[msg.sender].exists, "pending request exists");
+        require(address(underlyingToken) != address(0), "underlying not configured");
 
         fheFundingManager.updateFunding(token);
 
@@ -215,6 +219,8 @@ contract FHERouter {
         ebool   eIsLong     = FHE.asEbool(encIsLong);
         euint64 eSize       = FHE.mul(eCollateral, eLeverage);
 
+        FHE.allowThis(eLeverage);
+        FHE.allowThis(eIsLong);
         FHE.allow(eCollateral, address(collateralToken));
         FHE.allow(eCollateral, address(positionManager));
         FHE.allow(eCollateral, msg.sender);
@@ -232,16 +238,22 @@ contract FHERouter {
 
     /**
      * @notice Phase 2 of the plain-collateral open path.
-     *         Uses the handles stored in Phase 1 — no re-encryption needed.
+     *         Re-verifies encrypted inputs (CoFHE ACL) and must match phase-1 handles.
      *         Transfers the user's newly wrapped encrypted collateral to the vault
      *         and opens the position.
-     * @param token        Index token; must equal `indexToken`.
-     * @param hasLiqPlain  Decrypted liquidity-check boolean from the Threshold Network.
-     * @param hasLiqSig    Threshold Network signature for the hasLiq handle.
+     * @param token            Index token; must equal `indexToken`.
+     * @param plainCollateral  Same plain amount passed to phase 1.
+     * @param encLeverage      Same encrypted leverage as phase 1.
+     * @param encIsLong        Same encrypted direction as phase 1.
+     * @param hasLiqPlain      Decrypted liquidity-check boolean from the Threshold Network.
+     * @param hasLiqSig        Threshold Network signature for the hasLiq handle.
      */
     function finalizeOpenPositionPlain(
-        address token,
-        bool    hasLiqPlain,
+        address   token,
+        uint64    plainCollateral,
+        InEuint64 calldata encLeverage,
+        InEbool   calldata encIsLong,
+        bool      hasLiqPlain,
         bytes calldata hasLiqSig
     ) public returns (bytes32 positionId) {
         require(token == indexToken, "unsupported index token");
@@ -250,14 +262,17 @@ contract FHERouter {
 
         PendingOpenRequest memory pending = pendingOpenRequests[msg.sender];
         require(pending.exists, "open check not submitted");
-        delete pendingOpenRequests[msg.sender];
 
         vault.storeReserveLiquidityProof(msg.sender, hasLiqPlain, hasLiqSig);
 
-        // Reconstruct handles from the values stored in Phase 1.
-        euint64 eCollateral = euint64.wrap(pending.collateralHandle);
-        euint64 eLeverage   = euint64.wrap(pending.leverageHandle);
-        ebool   eIsLong     = ebool.wrap(pending.isLongHandle);
+        euint64 eCollateral = FHE.asEuint64(plainCollateral);
+        euint64 eLeverage   = FHE.asEuint64(encLeverage);
+        ebool   eIsLong     = FHE.asEbool(encIsLong);
+
+        require(pending.collateralHandle == euint64.unwrap(eCollateral), "collateral mismatch");
+        require(pending.leverageHandle == euint64.unwrap(eLeverage), "leverage mismatch");
+        require(pending.isLongHandle == ebool.unwrap(eIsLong), "direction mismatch");
+        delete pendingOpenRequests[msg.sender];
 
         FHE.allow(eCollateral, address(collateralToken));
         FHE.allow(eCollateral, address(positionManager));
@@ -273,6 +288,18 @@ contract FHERouter {
         positionId = positionManager.openPositionFHE(msg.sender, token, eCollateral, eLeverage, eIsLong);
 
         emit OpenPosition(positionId, msg.sender);
+    }
+
+    /**
+     * @notice Clears a stuck phase-1 open request (e.g. failed finalize or abandoned flow).
+     * @dev Does not unwind plain collateral already wrapped in phase 1; trader keeps encrypted balance.
+     * @param token Index token; must equal `indexToken`.
+     */
+    function cancelPendingOpenPosition(address token) external {
+        require(token == indexToken, "unsupported index token");
+        require(pendingOpenRequests[msg.sender].exists, "no pending open");
+        delete pendingOpenRequests[msg.sender];
+        vault.cancelReserveLiquidityCheck(msg.sender);
     }
 
     function requestClosePosition(bytes32 positionId) public {
@@ -500,8 +527,11 @@ contract FHERouter {
         vault.storeReserveLiquidityProof(trader, hasLiqPlain, hasLiqSig);
 
         FHE.allow(eCollateral, address(positionManager));
+        FHE.allow(eCollateral, trader);
         FHE.allow(eLeverage, address(positionManager));
+        FHE.allow(eLeverage, trader);
         FHE.allow(eIsLong, address(positionManager));
+        FHE.allow(eIsLong, trader);
 
         positionManager.openPositionFHE(trader, token, eCollateral, eLeverage, eIsLong);
 

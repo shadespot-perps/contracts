@@ -35,7 +35,7 @@ contract MockPlainERC20 is ERC20 {
  *   3. submitOpenPositionCheckPlain  — router pulls underlying, wraps to encrypted,
  *                                      stores handles, submits vault liquidity check.
  *   4. [Threshold Network decrypts hasLiq off-chain — mocked as (true, "")]
- *   5. finalizeOpenPositionPlain     — router retrieves stored handles, transfers
+ *   5. finalizeOpenPositionPlain     — re-verifies enc inputs (CoFHE ACL), transfers
  *                                      encrypted collateral to vault, opens position.
  *
  * Amount conventions (6-decimal token, oracle prices in 1e18):
@@ -146,7 +146,9 @@ contract PlainCollateralTest is Test {
         vm.prank(trader_);
         router.submitOpenPositionCheckPlain(ethToken, col, _enc64(lev), _encBool(isLong));
         vm.prank(trader_);
-        lastPosId = router.finalizeOpenPositionPlain(ethToken, true, "");
+        lastPosId = router.finalizeOpenPositionPlain(
+            ethToken, col, _enc64(lev), _encBool(isLong), true, ""
+        );
     }
 
     /// Approve + setOperator + open in one call for the happy-path tests.
@@ -202,10 +204,29 @@ contract PlainCollateralTest is Test {
         );
     }
 
+    function test_PlainPath_CancelPendingOpen_ClearsState() public {
+        vm.prank(plainTrader);
+        underlying.approve(address(router), COLLATERAL);
+        vm.prank(plainTrader);
+        fheToken.setOperator(address(router), type(uint48).max);
+        vm.prank(plainTrader);
+        router.submitOpenPositionCheckPlain(
+            ethToken, COLLATERAL, _enc64(LEVERAGE), _encBool(true)
+        );
+
+        vm.prank(plainTrader);
+        router.cancelPendingOpenPosition(ethToken);
+
+        (,,, bool exists) = router.pendingOpenRequests(plainTrader);
+        assertFalse(exists);
+    }
+
     function test_PlainPath_Phase2WithoutPhase1_Reverts() public {
         vm.prank(plainTrader);
         vm.expectRevert("open check not submitted");
-        router.finalizeOpenPositionPlain(ethToken, true, "");
+        router.finalizeOpenPositionPlain(
+            ethToken, COLLATERAL, _enc64(LEVERAGE), _encBool(true), true, ""
+        );
     }
 
     function test_PlainPath_MissingOperator_Phase2Reverts() public {
@@ -220,7 +241,9 @@ contract PlainCollateralTest is Test {
         // Phase 2 fails: router can't confidentialTransferFrom without operator
         vm.prank(plainTrader);
         vm.expectRevert(); // FHERC20UnauthorizedSpender
-        router.finalizeOpenPositionPlain(ethToken, true, "");
+        router.finalizeOpenPositionPlain(
+            ethToken, COLLATERAL, _enc64(LEVERAGE), _encBool(true), true, ""
+        );
     }
 
     function test_PlainPath_InsufficientLiquidity_Phase2Reverts() public {
@@ -240,7 +263,9 @@ contract PlainCollateralTest is Test {
         // Pass hasLiqPlain = false (Threshold Network says insufficient liquidity)
         vm.prank(plainTrader);
         vm.expectRevert("Insufficient vault liquidity");
-        router.finalizeOpenPositionPlain(ethToken, false, "");
+        router.finalizeOpenPositionPlain(
+            ethToken, bigCol, _enc64(1), _encBool(true), false, ""
+        );
     }
 
     // ======================================================================

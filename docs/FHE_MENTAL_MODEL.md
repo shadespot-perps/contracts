@@ -146,6 +146,12 @@ Inside `PositionManager.openPositionFHE`, the vault consumes the approval:
 
 - `vault.reserveLiquidity(trader)` → requires vault’s `_liqApproved[trader] == true`
 
+**Plain collateral open:** `submitOpenPositionCheckPlain` / `finalizeOpenPositionPlain`
+
+- Phase 1 calls `FHE.allowThis` on user-supplied `encLeverage` / `encIsLong` (router must delegate ACL on mainnet).
+- Phase 2 **must** re-pass `plainCollateral`, `encLeverage`, and `encIsLong` (same as encrypted finalize) and call `FHE.asEuint64` / `FHE.asEbool` again — wrapping stored handles alone causes CoFHE `SenderNotAllowed(router)`.
+- Stuck phase 1: `cancelPendingOpenPosition(token)` clears router + vault pending liquidity state (wrapped collateral remains with the trader).
+
 ### B) Trigger/limit orders (price condition + liquidity gate)
 
 **Phase 1:** `FHERouter.submitOrderExecutionChecks(orderId)`

@@ -145,7 +145,7 @@ contract FHEVault is IVault {
         FHE.allow(lpBalance[lp], address(this));
         FHE.allow(totalLiquidity, address(this));
         FHE.allow(lpBalance[lp], lp);
-        _syncEncryptedTotalSupplyAllows();
+        // _syncEncryptedTotalSupplyAllows();
 
         if (address(lpToken) != address(0)) {
             FHE.allow(shares, address(lpToken));
@@ -277,7 +277,7 @@ contract FHEVault is IVault {
         FHE.allow(eAmount, address(collateralToken));
         FHE.allow(eAmount, lp);
         FHE.allow(lpBalance[lp], lp);
-        _syncEncryptedTotalSupplyAllows();
+        // _syncEncryptedTotalSupplyAllows();
 
         if (address(lpToken) != address(0)) {
             FHE.allow(eShares, address(lpToken));
@@ -405,6 +405,16 @@ contract FHEVault is IVault {
         _liqApprovedSize[trader]  = plc.eSize;
         FHE.allow(plc.eSize, address(this));
         delete pendingLiqCheck[trader];
+    }
+
+    /**
+     * @notice Clears a phase-1 open liquidity check when the trader abandons the flow.
+     * @param trader Trader address that submitted `submitOpenLiquidityCheck`.
+     */
+    function cancelReserveLiquidityCheck(address trader) external onlyRouter {
+        delete pendingLiqCheck[trader];
+        _liqApproved[trader] = false;
+        _liqApprovedSize[trader] = euint64.wrap(bytes32(0));
     }
 
     function consumeOpenLiquidityApproval(address trader) public onlyPositionManager {

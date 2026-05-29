@@ -177,6 +177,17 @@ contract PositionManager {
         return euint128.unwrap(positions[key].collateral);
     }
 
+    /// @notice Returns the owner of a position (protocol contracts only).
+    function getPositionOwner(bytes32 key) external view returns (address) {
+        require(
+            msg.sender == fheRouter || msg.sender == router ||
+            msg.sender == liquidationManager || msg.sender == finalizer || msg.sender == owner,
+            "unauthorized"
+        );
+        require(positions[key].exists, "no position");
+        return positions[key].owner;
+    }
+
     /**
      * @notice Opens a leveraged position using encrypted collateral.
      * @param trader       Trader address.
@@ -303,6 +314,11 @@ contract PositionManager {
     FHE.allow(position.size,       finalizer);
     FHE.allow(position.isLong,     finalizer);
     FHE.allow(position.collateral, finalizer);
+
+    // Keeper / TN decrypt without permit (same pattern as vault liquidity checks).
+    FHE.allowPublic(eFinalAmount);
+    FHE.allowPublic(position.size);
+    FHE.allowPublic(position.collateral);
 
     emit CloseRequested(
         key,

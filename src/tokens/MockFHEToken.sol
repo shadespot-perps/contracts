@@ -21,7 +21,7 @@ contract MockFHEToken is FHERC20 {
     constructor(
         string memory name_,
         string memory symbol_
-    ) FHERC20(name_, symbol_, 18) {}
+    ) FHERC20(name_, symbol_, 6) {}
 
     // -------------------------------------------------------
     // Mint / burn — no access control (test / dev token)

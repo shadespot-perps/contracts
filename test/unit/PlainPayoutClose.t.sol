@@ -146,7 +146,9 @@ contract PlainPayoutCloseTest is Test {
         vm.prank(t);
         router.submitOpenPositionCheckPlain(ethToken, COLLATERAL, _enc64(LEVERAGE), _encBool(isLong));
         vm.prank(t);
-        lastPosId = router.finalizeOpenPositionPlain(ethToken, true, "");
+        lastPosId = router.finalizeOpenPositionPlain(
+            ethToken, COLLATERAL, _enc64(LEVERAGE), _encBool(isLong), true, ""
+        );
     }
 
     /// Request close + finalize. After this call the trader already holds their plain ERC-20.

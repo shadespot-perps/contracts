@@ -44,7 +44,8 @@ const FHE_ROUTER_ABI = [
   "function underlyingToken() external view returns (address)",
   `function addLiquidity(${S} encAmount) external`,
   `function submitOpenPositionCheckPlain(address token, uint64 plainCollateral, ${S} encLeverage, ${S} encIsLong) external`,
-  "function finalizeOpenPositionPlain(address token, bool hasLiqPlain, bytes hasLiqSig) external returns (bytes32)",
+  `function finalizeOpenPositionPlain(address token, uint64 plainCollateral, ${S} encLeverage, ${S} encIsLong, bool hasLiqPlain, bytes hasLiqSig) external returns (bytes32)`,
+  "function cancelPendingOpenPosition(address token) external",
   "function requestCloseEncryptedPayout(bytes32 positionId) external",
   "function finalizeCloseEncryptedPayout(bytes32 positionId, uint256 finalAmount, bytes finalAmountSig, uint256 sizePlain, bytes sizeSig, uint256 collateralPlain, bytes collateralSig, bool isLongPlain) external",
   "event OpenPosition(bytes32 indexed positionKey, address indexed trader)",
@@ -156,6 +157,9 @@ async function main() {
     try {
       const openTx = await fheRouter.finalizeOpenPositionPlain(
         INDEX_TOKEN,
+        PLAIN_COLLATERAL,
+        inEuint64(LEVERAGE),
+        inEbool(IS_LONG),
         true,  // hasLiqPlain — vault liquidity check result
         "0x",  // hasLiqSig  — CoFHE dispatcher signature (empty on mock)
       );
